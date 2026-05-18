@@ -189,6 +189,31 @@ def test_h4_hallucinate(lm):
     assert isinstance(neurons, list)  # may be empty on Qwen3-0.6B
 
 
+def test_h6_benchmark_harness(lm, tmp_path):
+    """H6 harness: synthesize 3 MCQ items + run two conditions."""
+    from src.healthbench import (
+        MCQItem, run_conditions, ablate_neurons_factory,
+    )
+
+    items = [
+        MCQItem(
+            q_id=f"smoke#{i}",
+            question=f"What is {i} + 1?",
+            options={"A": str(i), "B": str(i + 1), "C": str(i + 2), "D": str(i + 3)},
+            gold="B",
+        )
+        for i in range(3)
+    ]
+    conditions = {
+        "baseline": None,
+        "ablate_zero": ablate_neurons_factory(lm.layers, [{"layer": 0, "neuron": 0}]),
+    }
+    out = run_conditions(lm, items, conditions, out_dir=tmp_path / "h6")
+    assert "baseline" in out and "ablate_zero" in out
+    assert (tmp_path / "h6" / "comparison.csv").exists()
+    assert (tmp_path / "h6" / "summary.json").exists()
+
+
 def test_eval_helpers():
     from src.eval import score_hedging, score_injection
 

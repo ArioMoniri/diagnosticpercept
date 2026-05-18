@@ -119,6 +119,41 @@ def anchor_intervention(
 
 
 # ---------------------------------------------------------------------------
+# Whole-MLP ablation (H3 / H6 — "is this layer causally necessary?")
+# ---------------------------------------------------------------------------
+
+
+def _make_zero_mlp_hook():
+    def hook(_module, inputs):
+        (h,) = inputs
+        return (torch.zeros_like(h),)
+    return hook
+
+
+@contextmanager
+def zero_mlp_intervention(
+    layers: Sequence[nn.Module], layer_indices: Sequence[int]
+) -> Iterator[None]:
+    """Force the MLP pre-down-projection ``h`` of each given layer to zero.
+
+    Wraps a forward pre-hook on each ``mlp.down_proj``. Used by H6 to test
+    whether the H3 critical routing layer's MLP is causally necessary for
+    diagnosis accuracy — if accuracy collapses, the layer carries real
+    diagnostic computation, not just a routing trace.
+    """
+    handles = []
+    for L in layer_indices:
+        handles.append(
+            layers[L].mlp.down_proj.register_forward_pre_hook(_make_zero_mlp_hook())
+        )
+    try:
+        yield
+    finally:
+        for h in handles:
+            h.remove()
+
+
+# ---------------------------------------------------------------------------
 # Residual-stream activation patching (H3, ROME/IOI-style)
 # ---------------------------------------------------------------------------
 

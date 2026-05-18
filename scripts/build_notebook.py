@@ -748,7 +748,132 @@ axes[1].grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H5_RESULTS / 'calibration.png', dpi=140); plt.show()
 """)))
 
-cells.append(md("## 8. Persist run metadata"))
+cells.append(md(
+    "## 8. H6 — Benchmark eval under interventions\n\n"
+    "Runs **MedQA-USMLE** (4-option, ~1273 test questions; closest open analog "
+    "to HealthBench under permissive licensing) under four conditions:\n\n"
+    "  - **baseline** — no intervention\n"
+    "  - **ablate_overconf** — top-3 H5 overconfidence neurons zeroed\n"
+    "  - **ablate_halluc** — top-3 H4 hallucination neurons zeroed\n"
+    "  - **gate_anchor** — H1 anchor intervention at the best gate\n\n"
+    "Per-condition `.jsonl` + a side-by-side `comparison.csv` are written to "
+    "`/content/results/h6/` so the answer set can be diffed offline.\n\n"
+    "Default `N_BENCH=200` for a ~25 min Colab run; set `N_BENCH=None` for the full set."
+))
+
+cells.append(code(wrap("H6 — load benchmark + define conditions", """
+from src.healthbench import (
+    load_medqa, run_conditions, ablate_neurons_factory,
+    anchor_factory, zero_mlp_factory,
+)
+
+H6_RESULTS = RESULTS / 'h6'; H6_RESULTS.mkdir(exist_ok=True)
+
+# 100 questions x 6 conditions ≈ 30 min wall on A100 with reasoning chains
+# (~200 new tokens / question). Set to None for the full ~1273-question set.
+N_BENCH = 100
+DATASET = 'GBaker/MedQA-USMLE-4-options-hf'
+print(f'Loading {DATASET} (n={N_BENCH or "ALL"})')
+items = load_medqa(DATASET, split='test', n=N_BENCH, seed=0)
+print(f'Loaded {len(items)} items.')
+
+# Build intervention specs from the neurons identified in H1/H3/H4/H5.
+top_overconf = [{'layer': n.layer, 'neuron': n.neuron} for n in over_neurons[:3]]
+top_halluc   = [{'layer': n.layer, 'neuron': n.neuron} for n in halluc_neurons[:3]]
+combined     = top_overconf + top_halluc
+
+print('H1 gate           :', f'L{L_star}:F{N_star}  m*={m_star}  d={d:.4f}')
+print('H3 critical layer :', f'L{critical}  (mean patch score {mean_per_layer[critical]:+.3f})')
+print('H4 top-3 halluc   :', top_halluc)
+print('H5 top-3 overconf :', top_overconf)
+
+# Six conditions: baseline + one per hypothesis + a combined calibration probe.
+# Each condition runs the *same* questions through the same prompt, so the
+# resulting CSV is a direct same-question diff of how each intervention
+# changes both the answer letter AND the reasoning chain.
+CONDITIONS = {
+    'baseline':            None,
+    'h1_gate_anchor':      anchor_factory(lm.layers, L_star, N_star, m_star, d, k=1.0),
+    'h3_zero_layer':       zero_mlp_factory(lm.layers, [critical]),
+    'h4_ablate_halluc':    ablate_neurons_factory(lm.layers, top_halluc),
+    'h5_ablate_overconf':  ablate_neurons_factory(lm.layers, top_overconf),
+    'h4_h5_combined':      ablate_neurons_factory(lm.layers, combined),
+}
+""")))
+
+cells.append(code(wrap("H6 — run all conditions (resumable)", """
+# Resumable: if `h6/<condition>.jsonl` exists, picks up from the next item.
+# Wall time on A100 with reasoning chains (~200 tokens / question):
+# 100 q × 6 conditions × ~3 s ≈ 30 min.
+import time
+t0 = time.time()
+all_results = run_conditions(
+    lm, items, CONDITIONS, out_dir=H6_RESULTS, save_every=25,
+)
+print(f'\\nDone in {(time.time() - t0)/60:.1f} min')
+
+import json
+summary = json.loads((H6_RESULTS / 'summary.json').read_text())
+print(f'\\n{"condition":<20} {"acc":>7}  {"p_top1":>8}  {"p_gold":>8}  {"brier":>8}')
+print('-' * 60)
+for c, s in summary.items():
+    print(f'{c:<20} {s["accuracy"]:>7.3f}  {s["mean_p_top1"]:>8.4f}  '
+          f'{s["mean_p_gold_letter"]:>8.4f}  {s["brier_score"]:>8.4f}')
+""")))
+
+cells.append(code(wrap("H6 — sample reasoning per condition", """
+# Inspect how each intervention changes the reasoning chain on the same
+# question. Helpful when accuracy is similar but the answer's *justification*
+# shifts (e.g. anchor intervention preserves the letter but hedges more).
+import textwrap
+EX = 3
+for cond, rows in all_results.items():
+    print(f'\\n========== {cond} (sample of {EX}) ==========')
+    for r in rows[:EX]:
+        verdict = 'OK ' if r.correct else 'ERR'
+        print(f'\\n[{verdict}] gold={r.gold}  pred={r.predicted}  p_top1={r.p_top1:.3f}')
+        print('Q :', textwrap.shorten(r.question, 200))
+        rsn = r.reasoning or '(no parsed reasoning — raw_output:)'
+        print('R :', textwrap.shorten(rsn or r.raw_output, 300))
+""")))
+
+cells.append(code(wrap("H6 — comparison table + delta plot", """
+import csv, matplotlib.pyplot as plt, numpy as np
+rows = []
+with open(H6_RESULTS / 'comparison.csv') as f:
+    reader = csv.DictReader(f)
+    for r in reader:
+        rows.append(r)
+print(f'Per-question comparison: {len(rows)} rows in {H6_RESULTS / "comparison.csv"}')
+
+# Delta accuracy vs baseline.
+conds = [c for c in CONDITIONS.keys() if c != 'baseline']
+base_acc = sum(int(r['baseline_correct'] or 0) for r in rows) / max(1, len(rows))
+print(f'\\nBaseline accuracy: {base_acc:.3f}')
+for c in conds:
+    acc = sum(int(r[f'{c}_correct'] or 0) for r in rows) / max(1, len(rows))
+    print(f'  {c:<20}: {acc:.3f}  ({acc - base_acc:+.3f})')
+
+# Calibration: did ablate_overconf bring p_top1 down to a level closer to correctness?
+fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+for c in CONDITIONS:
+    p = np.array([float(r[f'{c}_p_top1']) for r in rows if r[f'{c}_p_top1']])
+    correct = np.array([int(r[f'{c}_correct'] or 0) for r in rows if r[f'{c}_p_top1']])
+    axes[0].hist(p, bins=20, histtype='step', label=c, alpha=0.8, linewidth=1.5)
+    # Reliability: mean correctness per p-bin.
+    bins = np.linspace(0, 1, 11)
+    bin_idx = np.digitize(p, bins) - 1
+    means = [correct[bin_idx == b].mean() if (bin_idx == b).any() else np.nan for b in range(10)]
+    axes[1].plot((bins[:-1] + bins[1:]) / 2, means, marker='o', label=c, alpha=0.8)
+axes[0].set_xlabel('p_top1 (first-token confidence)'); axes[0].set_ylabel('# questions')
+axes[0].set_title('Confidence distribution per condition'); axes[0].legend(fontsize=8); axes[0].grid(alpha=0.3)
+axes[1].plot([0, 1], [0, 1], 'k--', lw=0.5, label='perfect')
+axes[1].set_xlabel('predicted p_top1'); axes[1].set_ylabel('empirical accuracy')
+axes[1].set_title('Reliability diagram'); axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3)
+plt.tight_layout(); plt.savefig(H6_RESULTS / 'reliability.png', dpi=140); plt.show()
+""")))
+
+cells.append(md("## 9. Persist run metadata"))
 
 cells.append(code(wrap("write run.json", """
 import subprocess, datetime
@@ -773,6 +898,11 @@ manifest = {
             'overconfidence_neurons': str(H5_RESULTS / 'overconfidence_neurons.json'),
             'mean_calibration_gap': float(sum(c['calibration_gap'] for c in cases_dump) / max(1, len(cases_dump))),
             'overconfident_rate': float(sum(1 for c in cases_dump if c['calibration_gap'] > 0.3) / max(1, len(cases_dump)))},
+    'h6': {'summary': str(H6_RESULTS / 'summary.json'),
+            'comparison_csv': str(H6_RESULTS / 'comparison.csv'),
+            'dataset': DATASET,
+            'n_questions': len(items),
+            'conditions': list(CONDITIONS.keys())},
 }
 (RESULTS / 'run.json').write_text(json.dumps(manifest, indent=2))
 print(json.dumps(manifest, indent=2))
