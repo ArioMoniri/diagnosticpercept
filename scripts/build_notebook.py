@@ -426,10 +426,28 @@ amp_path = H2_RESULTS / 'amplification.json'
 benign = h2['_benign_prompts']['positive'][:4]
 multipliers = [0.0, 1.0, 2.0, 4.0, 8.0]
 
+def _schema_ok(payload):
+    # Reject prior-run dumps written with absolute multipliers (20/80/160).
+    expected = set(multipliers)
+    for rows in payload.values():
+        seen = {r['multiplier'] for r in rows}
+        if not expected.issubset(seen):
+            return False
+    return True
+
 if amp_path.exists():
-    amp_results = json.loads(amp_path.read_text())
-    print('Reloaded amplification.')
+    cached = json.loads(amp_path.read_text())
+    if _schema_ok(cached):
+        amp_results = cached
+        print('Reloaded amplification.')
+    else:
+        print(f'Cached {amp_path} written with stale multipliers — recomputing.')
+        amp_path.unlink()
+        amp_results = None
 else:
+    amp_results = None
+
+if amp_results is None:
     amp_results = {}
     for disease, neurons in concepts.items():
         c = neurons[0]
