@@ -153,6 +153,21 @@ def test_h3_patch_layers_and_drill(lm):
     assert len(drill) > 0
 
 
+def test_h5_calibration(lm):
+    """H5 measures p_dx + p_yes and ranks overconfidence neurons."""
+    from src.calibration import find_overconfidence_neurons
+    from src.data import HARD_DIAGNOSTIC_CASES
+
+    cases, neurons = find_overconfidence_neurons(
+        lm, hard_cases=HARD_DIAGNOSTIC_CASES[:4],
+        layer_range=(0, max(2, lm.n_layers // 4)),
+        top_k=2, gap_high_low_n=1,
+    )
+    assert len(cases) == 4
+    assert all(0 <= c.p_dx <= 1 and 0 <= c.p_yes <= 1 for c in cases)
+    assert isinstance(neurons, list)
+
+
 def test_h4_hallucinate(lm):
     """H4 produces classifications + ranked hallucination neurons (tiny set)."""
     from src.data import build_h4

@@ -491,7 +491,7 @@ ax.legend(fontsize=8); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H3_RESULTS / 'patch_layers.png', dpi=140); plt.show()
 """)))
 
-cells.append(code(wrap("H3 — neuron drill at critical layer", """
+cells.append(code(wrap("H3 — full d_ff drill at critical layer", """
 mean_per_layer = {}
 for L in range(lm.n_layers):
     vals = [r['score'] for rows in patch_data.values() for r in rows if r['layer'] == L]
@@ -500,17 +500,20 @@ for L in range(lm.n_layers):
 critical = max(mean_per_layer, key=mean_per_layer.get)
 print(f'Critical layer (mean score {mean_per_layer[critical]:+.3f}): L{critical}')
 
-drill_path = H3_RESULTS / f'drill_L{critical}.json'
+# FULL-d_ff drill at the critical layer — every neuron gets patched in turn.
+# For Med42-8B (d_ff=14336) that's ~14k forwards through one pair on the
+# Blackwell GPU, ~30 min wall. Output is the per-neuron routing contribution.
+drill_path = H3_RESULTS / f'drill_L{critical}_full.json'
 if drill_path.exists():
     drill_data = json.loads(drill_path.read_text())
-    print('Reloaded drill data.')
+    print(f'Reloaded full drill ({len(drill_data)} neurons).')
 else:
     pair = H3_PAIRS[0]
-    stride = max(1, lm.d_ff // 256)
+    print(f'Drilling full d_ff={lm.d_ff} at L{critical} on pair {pair.pair_id} ...')
     drill = patch_neurons_at_layer(
         lm, pair.clean_prompt, pair.corrupted_prompt,
         pair.clean_dx, pair.corrupted_dx, layer_idx=critical,
-        neuron_indices=list(range(0, lm.d_ff, stride)),
+        neuron_indices=list(range(lm.d_ff)),
         pair_id=pair.pair_id,
     )
     drill_data = [d.__dict__ for d in drill]
@@ -622,7 +625,96 @@ ax.legend(); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H4_RESULTS / 'layer_profile.png', dpi=140); plt.show()
 """)))
 
-cells.append(md("## 7. Persist run metadata"))
+cells.append(md(
+    "## 7. H5 — overconfidence / miscalibration neurons\n\n"
+    "Distinct from H4 (committed when it should have refused). H5 targets a "
+    "subtler failure: cases where the model's **next-token probability** of "
+    "its own diagnosis is low (it doesn't really know), but when asked "
+    "*'Are you confident?'* it says **yes** with high probability.\n\n"
+    "Per case we measure:\n"
+    "- `p_dx` = model's max softmax probability on the diagnosis slot (actual top-1 confidence)\n"
+    "- `p_yes` = probability mass on confident-attestation tokens (\"Yes\", \"Sure\", ...) on the follow-up prompt\n"
+    "- `calibration_gap = p_yes − p_dx`\n\n"
+    "Then we Pearson-correlate every MLP neuron's attestation-time activation "
+    "with `calibration_gap` across the hard-case set. Neurons with high "
+    "positive correlation fire harder when the model is *more* overconfident "
+    "than warranted — they encode 'I am sure' independent of whether the "
+    "underlying answer is well-supported."
+))
+
+cells.append(code(wrap("H5 — measure calibration on hard cases + rank neurons", """
+from src.calibration import find_overconfidence_neurons, CalibrationCase, OverconfidenceNeuron
+
+H5_RESULTS = RESULTS / 'h5'; H5_RESULTS.mkdir(exist_ok=True)
+h5_cases_path = H5_RESULTS / 'cases.json'
+h5_neurons_path = H5_RESULTS / 'overconfidence_neurons.json'
+
+if h5_cases_path.exists() and h5_neurons_path.exists():
+    cases_dump = json.loads(h5_cases_path.read_text())
+    over_neurons = [OverconfidenceNeuron(**n) for n in json.loads(h5_neurons_path.read_text())]
+    print(f'Reloaded H5: {len(cases_dump)} cases, {len(over_neurons)} neurons.')
+else:
+    hard_for_h5 = h1['hard_cases']  # 20 messy multi-finding vignettes
+    cases, over_neurons = find_overconfidence_neurons(
+        lm, hard_cases=hard_for_h5,
+        layer_range=None,           # default = later half (commitment / confidence)
+        top_k=15, overconf_threshold=0.3, gap_high_low_n=4,
+    )
+    # Persist (drop the per-layer activation tensors — too big for JSON).
+    cases_dump = [
+        {
+            'case': c.case, 'dx_text': c.dx_text,
+            'p_dx': c.p_dx, 'p_yes': c.p_yes, 'p_no': c.p_no,
+            'calibration_gap': c.calibration_gap,
+        }
+        for c in cases
+    ]
+    h5_cases_path.write_text(json.dumps(cases_dump, indent=2))
+    h5_neurons_path.write_text(json.dumps([n.__dict__ for n in over_neurons], indent=2))
+
+# Calibration table.
+print(f'{"#":>3}  {"p_dx":>6}  {"p_yes":>6}  {"p_no":>6}  {"gap":>7}  dx -> case-prefix')
+print('-' * 110)
+for i, c in enumerate(sorted(cases_dump, key=lambda x: x['calibration_gap'], reverse=True)):
+    case_prefix = c['case'][:55].replace(chr(10), ' ')
+    dx = c['dx_text'][:32].replace(chr(10), ' ')
+    print(f'{i:>3}  {c["p_dx"]:>6.3f}  {c["p_yes"]:>6.3f}  {c["p_no"]:>6.3f}  {c["calibration_gap"]:>+7.3f}  {dx:<32} | {case_prefix}...')
+
+print('\\nTop overconfidence neurons (corr(activation, calibration_gap)):')
+for n in over_neurons:
+    print(f'  L{n.layer:>2}:F{n.neuron:<6}  r={n.pearson_r:+.3f}  '
+          f'mean_overconf={n.mean_act_overconf:+.3f}  mean_calib={n.mean_act_calib:+.3f}')
+""")))
+
+cells.append(code(wrap("H5 — plot calibration scatter + neuron correlation", """
+import numpy as np, matplotlib.pyplot as plt
+p_dx = np.array([c['p_dx'] for c in cases_dump])
+p_yes = np.array([c['p_yes'] for c in cases_dump])
+gap = np.array([c['calibration_gap'] for c in cases_dump])
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+axes[0].scatter(p_dx, p_yes, alpha=0.7)
+axes[0].plot([0, 1], [0, 1], 'k--', lw=0.5, label='perfect calibration')
+axes[0].set_xlabel('p_dx (actual top-1 confidence)')
+axes[0].set_ylabel('p_yes (stated confidence)')
+axes[0].set_title('H5 — calibration scatter (points above y=x are overconfident)')
+axes[0].set_xlim(0, 1); axes[0].set_ylim(0, 1); axes[0].grid(alpha=0.3); axes[0].legend()
+
+# Per-layer mean pearson_r of the top neurons.
+by_layer = {}
+for n in over_neurons:
+    by_layer.setdefault(n.layer, []).append(n.pearson_r)
+layers = sorted(by_layer)
+mean_r = [np.mean(by_layer[L]) for L in layers]
+axes[1].bar(layers, mean_r, alpha=0.7)
+axes[1].axhline(0, color='k', lw=0.5)
+axes[1].set_xlabel('layer'); axes[1].set_ylabel('mean Pearson r (top overconf neurons)')
+axes[1].set_title('H5 — overconfidence signal by layer')
+axes[1].grid(alpha=0.3)
+plt.tight_layout(); plt.savefig(H5_RESULTS / 'calibration.png', dpi=140); plt.show()
+""")))
+
+cells.append(md("## 8. Persist run metadata"))
 
 cells.append(code(wrap("write run.json", """
 import subprocess, datetime
@@ -643,6 +735,10 @@ manifest = {
             'commit_rate_trap': commit_rate('trap'),
             'commit_rate_pathognomonic': commit_rate('pathognomonic'),
             'commit_rate_hedge': commit_rate('hedge')},
+    'h5': {'cases': str(H5_RESULTS / 'cases.json'),
+            'overconfidence_neurons': str(H5_RESULTS / 'overconfidence_neurons.json'),
+            'mean_calibration_gap': float(sum(c['calibration_gap'] for c in cases_dump) / max(1, len(cases_dump))),
+            'overconfident_rate': float(sum(1 for c in cases_dump if c['calibration_gap'] > 0.3) / max(1, len(cases_dump)))},
 }
 (RESULTS / 'run.json').write_text(json.dumps(manifest, indent=2))
 print(json.dumps(manifest, indent=2))
