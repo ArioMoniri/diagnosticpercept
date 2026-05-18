@@ -1,0 +1,46 @@
+{
+  "pairs": [
+    {
+      "pair_id": "mi_vs_asthma_1",
+      "clean_prompt": "Patient: crushing chest pain, ST-elevation, troponin 8.2. Diagnosis:",
+      "corrupted_prompt": "Patient: episodic wheezing, prolonged expiration, peak flow 40%. Diagnosis:",
+      "clean_dx": "MI",
+      "corrupted_dx": "asthma"
+    },
+    {
+      "pair_id": "mi_vs_asthma_2",
+      "clean_prompt": "Patient: substernal pressure radiating to left arm, anterior ST elevations. Diagnosis:",
+      "corrupted_prompt": "Patient: dyspnea, expiratory wheezing, FEV1 60% with reversibility. Diagnosis:",
+      "clean_dx": "MI",
+      "corrupted_dx": "asthma"
+    },
+    {
+      "pair_id": "pneumonia_vs_sepsis_1",
+      "clean_prompt": "Patient: fever, productive cough, right lower lobe consolidation. Diagnosis:",
+      "corrupted_prompt": "Patient: hypotension, lactate 5, warm extremities, positive blood cultures. Diagnosis:",
+      "clean_dx": "pneumonia",
+      "corrupted_dx": "sepsis"
+    },
+    {
+      "pair_id": "pneumonia_vs_sepsis_2",
+      "clean_prompt": "Patient: rigors, crackles, chest X-ray with lobar consolidation. Diagnosis:",
+      "corrupted_prompt": "Patient: MAP 55 after 30 mL/kg fluids, lactate 4.6, source unclear. Diagnosis:",
+      "clean_dx": "pneumonia",
+      "corrupted_dx": "sepsis"
+    },
+    {
+      "pair_id": "t2dm_vs_depression_1",
+      "clean_prompt": "Patient: polyuria, polydipsia, fasting glucose 198, HbA1c 9.2. Diagnosis:",
+      "corrupted_prompt": "Patient: two weeks anhedonia, insomnia, weight loss, suicidal ideation. Diagnosis:",
+      "clean_dx": "T2DM",
+      "corrupted_dx": "depression"
+    },
+    {
+      "pair_id": "t2dm_vs_depression_2",
+      "clean_prompt": "Patient: central obesity, acanthosis nigricans, HbA1c 8.4. Diagnosis:",
+      "corrupted_prompt": "Patient: low mood, anhedonia for 6 weeks, PHQ-9 of 21. Diagnosis:",
+      "clean_dx": "T2DM",
+      "corrupted_dx": "depression"
+    }
+  ]
+}

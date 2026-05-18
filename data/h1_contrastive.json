@@ -1,0 +1,61 @@
+{
+  "positive": [
+    "A 58-year-old man presents with crushing substernal chest pain radiating to the left arm, ST-elevation in leads II, III, aVF, and elevated troponin. What is the diagnosis?",
+    "A 45-year-old woman with polyuria, polydipsia, fasting glucose 198 mg/dL, and HbA1c 9.2%. What is the diagnosis?",
+    "A 7-year-old with episodic wheezing, prolonged expiration, and reversible airflow obstruction on spirometry after bronchodilator. What is the diagnosis?",
+    "A 72-year-old with productive cough, fever 39.1 C, right lower lobe consolidation on chest X-ray, and crackles on auscultation. What is the diagnosis?",
+    "A 65-year-old with fever, tachycardia 122, hypotension 82/48, lactate 4.1 mmol/L, and known UTI. What is the diagnosis?",
+    "A 30-year-old with two weeks of anhedonia, insomnia, weight loss, psychomotor retardation, and suicidal ideation. What is the diagnosis?",
+    "A neonate with bile-stained vomiting, abdominal distension, and a 'double-bubble' sign on plain film. What is the diagnosis?",
+    "A 25-year-old with a butterfly malar rash, oral ulcers, arthralgia, ANA positive 1:640, and proteinuria. What is the diagnosis?",
+    "A 60-year-old smoker with a 3-month cough, hemoptysis, weight loss, and a 4 cm spiculated mass in the right upper lobe. What is the diagnosis?",
+    "A 19-year-old with sudden onset severe headache, photophobia, nuchal rigidity, and a positive Kernig sign. What is the diagnosis?",
+    "A 12-year-old with high fever, strawberry tongue, sandpaper rash, and a positive rapid strep test. What is the diagnosis?",
+    "A 50-year-old with tremor at rest, bradykinesia, cogwheel rigidity, and asymmetric onset. What is the diagnosis?",
+    "A 36-year-old woman with heat intolerance, weight loss, tachycardia, exophthalmos, and a diffuse goiter. What is the diagnosis?",
+    "A 70-year-old with pill-rolling tremor, masked facies, shuffling gait, improving on levodopa. What is the diagnosis?",
+    "A 23-year-old with abrupt onset polyuria, polydipsia, fruity breath, Kussmaul respirations, glucose 540, anion gap 22. What is the diagnosis?",
+    "A 55-year-old man with sudden tearing chest pain radiating to the back, asymmetric pulses, and a widened mediastinum. What is the diagnosis?",
+    "A 4-year-old with barking cough, inspiratory stridor, and a steeple sign on neck X-ray. What is the diagnosis?",
+    "A 28-year-old G2P1 at 32 weeks with new headache, BP 168/108, proteinuria 3+, and brisk reflexes. What is the diagnosis?",
+    "A 40-year-old with right upper quadrant pain after a fatty meal, positive Murphy sign, and gallstones on ultrasound. What is the diagnosis?",
+    "A 6-month-old with a strawberry-red, raised, well-demarcated cutaneous lesion present since 2 weeks of age. What is the diagnosis?"
+  ],
+  "negative": [
+    "A patient comes in with chest pain. What could be going on?",
+    "A patient reports fatigue for several weeks. What is your differential?",
+    "A child has a fever for three days. What are the possibilities?",
+    "An adult presents with shortness of breath. What are the leading possibilities?",
+    "A patient reports abdominal pain. What is the differential?",
+    "A teenager has a rash. What could it be?",
+    "An older adult has new confusion. What should I consider?",
+    "A pregnant patient reports headache. What is the differential?",
+    "A patient has joint pain. What are the possibilities?",
+    "A patient reports dizziness. What could be the cause?",
+    "Explain how aspirin works as an antiplatelet agent.",
+    "Describe the stages of wound healing.",
+    "What is the function of the renin-angiotensin-aldosterone system?",
+    "How does insulin lower blood glucose?",
+    "What are the principles of antibiotic stewardship?",
+    "Describe the cardiac action potential phases.",
+    "How does the immune system distinguish self from non-self?",
+    "What is the role of surfactant in the lung?",
+    "Explain the pathophysiology of atherosclerosis.",
+    "What are the four phases of the cell cycle?"
+  ],
+  "commitment_phrases": [
+    "The diagnosis is",
+    "Most likely",
+    "This is consistent with",
+    "Diagnosis:",
+    "The most likely diagnosis is"
+  ],
+  "icd10_tokens": [
+    "I21",
+    "E11",
+    "J18",
+    "J45",
+    "A41",
+    "F32"
+  ]
+}
