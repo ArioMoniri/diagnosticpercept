@@ -109,6 +109,7 @@ def load_medqa(
     for i, row in enumerate(ds):
         opts: Dict[str, str] = _normalize_options(row.get("options"))
         gold = ""
+        question = str(row.get("question", "")).strip()
 
         # Schema C: MedMCQA-style flat opa/opb/opc/opd if no `options` block.
         if not opts and all(k in row for k in ("opa", "opb", "opc", "opd")):
@@ -117,6 +118,21 @@ def load_medqa(
             cop = row.get("cop", -1)
             if isinstance(cop, int) and 0 <= cop < 4:
                 gold = _letter_for_idx(cop)
+
+        # Schema D: SWAG-style (used by GBaker/MedQA-USMLE-4-options-hf).
+        # Fields: sent1 / sent2 / ending0..ending3 / label (int 0-3).
+        if not opts and "ending0" in row:
+            endings = [row.get(f"ending{j}") for j in range(5)]
+            endings = [e for e in endings if e is not None and str(e).strip()]
+            if endings:
+                opts = {_letter_for_idx(j): str(e).strip() for j, e in enumerate(endings)}
+                if not question:
+                    s1 = str(row.get("sent1", "")).strip()
+                    s2 = str(row.get("sent2", "")).strip()
+                    question = (s1 + ("\n" + s2 if s2 else "")).strip()
+                label = row.get("label")
+                if isinstance(label, int) and 0 <= label < len(opts):
+                    gold = _letter_for_idx(label)
 
         # Try several fields for gold.
         if not gold:
@@ -150,7 +166,7 @@ def load_medqa(
 
         items.append(MCQItem(
             q_id=f"{name}#{split}#{i}",
-            question=str(row.get("question", "")),
+            question=question or str(row.get("question", "")),
             options=opts,
             gold=gold,
             source=name,
