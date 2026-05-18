@@ -1,8 +1,22 @@
 # Diagnostic Percept
 
+[![CI](https://github.com/ArioMoniri/diagnosticpercept/actions/workflows/ci.yml/badge.svg)](https://github.com/ArioMoniri/diagnosticpercept/actions/workflows/ci.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ArioMoniri/diagnosticpercept/blob/main/notebooks/diagnostic_percept.ipynb)
+
 Porting Kazemi et al. 2026 ("A Single Neuron Is Sufficient to Bypass Safety
 Alignment in LLMs", [arXiv 2605.08513](https://arxiv.org/abs/2605.08513)) from
 safety alignment to **clinical diagnosis** in a medical LLM.
+
+## Run it
+
+1. **Accept the Med42 license** (one click): https://huggingface.co/m42-health/Llama3-Med42-8B
+2. **Create an HF token**: https://huggingface.co/settings/tokens (`read` scope)
+3. **Open the notebook in Colab** via the badge above
+4. Either add `HF_TOKEN` as a Colab secret (🔑 sidebar) or paste it when `notebook_login()` prompts
+5. Run all cells — automation covers model load → H1 → H2 → H3 → results JSON
+
+If you skip step 1, the notebook automatically falls back to
+[`aaditya/Llama3-OpenBioLLM-8B`](https://huggingface.co/aaditya/Llama3-OpenBioLLM-8B) (not gated).
 
 ## Hypotheses
 

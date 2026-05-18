@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 SMOKE_MODEL = os.environ.get("DP_SMOKE_MODEL", "Qwen/Qwen3-0.6B")
+SKIP_H1 = os.environ.get("DP_SMOKE_SKIP_H1") == "1"
 
 
 @pytest.fixture(scope="module")
@@ -71,6 +72,7 @@ def test_backward_grads_flow(lm):
     assert g.abs().sum().item() > 0
 
 
+@pytest.mark.skipif(SKIP_H1, reason="DP_SMOKE_SKIP_H1=1 (CPU bf16 backward too slow for CI)")
 def test_h1_discover_and_sweep(lm):
     """H1 discovery returns 5 candidates and a sweep of multipliers."""
     from src.data import build_h1
@@ -167,6 +169,7 @@ def test_eval_helpers():
     assert inj.mentions and inj.relevant
 
 
+@pytest.mark.skipif(SKIP_H1, reason="DP_SMOKE_SKIP_H1=1")
 def test_smoke_under_60s(lm):
     """Sanity check that the full module-level test budget is in range.
 
