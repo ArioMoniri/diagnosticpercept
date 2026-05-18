@@ -782,7 +782,13 @@ top_overconf = [{'layer': n.layer, 'neuron': n.neuron} for n in over_neurons[:3]
 top_halluc   = [{'layer': n.layer, 'neuron': n.neuron} for n in halluc_neurons[:3]]
 combined     = top_overconf + top_halluc
 
-print('H1 gate           :', f'L{L_star}:F{N_star}  m*={m_star}  d={d:.4f}')
+# Defensively re-derive anchor d from the cached H1 candidate. The earlier
+# `d` global was shadowed by H3's `for d in top10` drill loop (where d became
+# a dict), which broke f-strings using `:.4f`. Pulling from `cands` is robust.
+best_cand_h1 = next(c for c in cands if c.layer == L_star and c.neuron == N_star)
+anchor_d = float(best_cand_h1.a_pos - best_cand_h1.a_neg) or 1e-3
+
+print('H1 gate           :', f'L{L_star}:F{N_star}  m*={m_star}  d={anchor_d:.4f}')
 print('H3 critical layer :', f'L{critical}  (mean patch score {mean_per_layer[critical]:+.3f})')
 print('H4 top-3 halluc   :', top_halluc)
 print('H5 top-3 overconf :', top_overconf)
@@ -793,7 +799,7 @@ print('H5 top-3 overconf :', top_overconf)
 # changes both the answer letter AND the reasoning chain.
 CONDITIONS = {
     'baseline':            None,
-    'h1_gate_anchor':      anchor_factory(lm.layers, L_star, N_star, m_star, d, k=1.0),
+    'h1_gate_anchor':      anchor_factory(lm.layers, L_star, N_star, m_star, anchor_d, k=1.0),
     'h3_zero_layer':       zero_mlp_factory(lm.layers, [critical]),
     'h4_ablate_halluc':    ablate_neurons_factory(lm.layers, top_halluc),
     'h5_ablate_overconf':  ablate_neurons_factory(lm.layers, top_overconf),

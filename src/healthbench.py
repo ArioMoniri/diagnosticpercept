@@ -85,35 +85,69 @@ def load_medqa(
     from datasets import load_dataset
     ds = load_dataset(name, split=split)
     items: List[MCQItem] = []
+    skipped: Dict[str, int] = {}
+
+    def _normalize_options(opts_field) -> Dict[str, str]:
+        """Accept dict, list, or HF Features-like dict and return {LETTER: text}."""
+        if opts_field is None:
+            return {}
+        if isinstance(opts_field, dict):
+            out = {}
+            for k, v in opts_field.items():
+                if v is None or str(v).strip() == "":
+                    continue
+                ks = str(k).strip()
+                # Some schemas use "A"/"B"/...; others "0"/"1"/...
+                if ks.isdigit():
+                    ks = _letter_for_idx(int(ks))
+                out[ks.upper()] = str(v).strip()
+            return out
+        if isinstance(opts_field, list):
+            return {_letter_for_idx(j): str(v).strip() for j, v in enumerate(opts_field) if v}
+        return {}
+
     for i, row in enumerate(ds):
-        opts: Dict[str, str] = {}
+        opts: Dict[str, str] = _normalize_options(row.get("options"))
         gold = ""
-        if "options" in row and isinstance(row["options"], dict):
-            opts = {k: str(v) for k, v in row["options"].items() if v}
-            if "answer_idx" in row:
-                gold = str(row["answer_idx"]).strip()[:1].upper()
-            elif "answer" in row:
-                # Some variants store the answer text; resolve back to a letter.
-                a = str(row["answer"]).strip()
-                for k, v in opts.items():
-                    if v.strip() == a:
-                        gold = k.upper()
-                        break
-        elif "options" in row and isinstance(row["options"], list):
-            opts = {_letter_for_idx(j): str(v) for j, v in enumerate(row["options"])}
-            if "answer" in row:
-                a = str(row["answer"]).strip()[:1].upper()
-                gold = a if a in opts else ""
-        elif all(k in row for k in ("opa", "opb", "opc", "opd")):
-            opts = {"A": row["opa"], "B": row["opb"], "C": row["opc"], "D": row["opd"]}
+
+        # Schema C: MedMCQA-style flat opa/opb/opc/opd if no `options` block.
+        if not opts and all(k in row for k in ("opa", "opb", "opc", "opd")):
+            opts = {"A": str(row["opa"]), "B": str(row["opb"]),
+                    "C": str(row["opc"]), "D": str(row["opd"])}
             cop = row.get("cop", -1)
             if isinstance(cop, int) and 0 <= cop < 4:
                 gold = _letter_for_idx(cop)
-        else:
-            continue
 
-        if not opts or not gold or gold not in opts:
-            continue
+        # Try several fields for gold.
+        if not gold:
+            for key in ("answer_idx", "answerKey", "answer_letter", "label"):
+                if key in row and row[key] is not None:
+                    raw = str(row[key]).strip()
+                    if raw and raw[0].upper() in opts:
+                        gold = raw[0].upper()
+                        break
+                    if raw.isdigit() and 0 <= int(raw) < len(opts):
+                        gold = _letter_for_idx(int(raw))
+                        break
+
+        # Last-ditch: match by answer *text*.
+        if not gold and "answer" in row and row["answer"] is not None:
+            a = str(row["answer"]).strip()
+            for k, v in opts.items():
+                if v.strip() == a:
+                    gold = k
+                    break
+            # Maybe the answer field is just a letter.
+            if not gold and a[:1].upper() in opts:
+                gold = a[:1].upper()
+
+        if not opts:
+            skipped["no_options"] = skipped.get("no_options", 0) + 1; continue
+        if not gold:
+            skipped["no_gold"] = skipped.get("no_gold", 0) + 1; continue
+        if gold not in opts:
+            skipped["gold_not_in_opts"] = skipped.get("gold_not_in_opts", 0) + 1; continue
+
         items.append(MCQItem(
             q_id=f"{name}#{split}#{i}",
             question=str(row.get("question", "")),
@@ -121,6 +155,17 @@ def load_medqa(
             gold=gold,
             source=name,
         ))
+
+    if not items:
+        # Surface enough info to debug a schema mismatch without a second run.
+        sample = dict(ds[0]) if len(ds) else {}
+        keys = list(sample.keys())
+        preview = {k: (str(sample[k])[:120] if sample[k] is not None else None) for k in keys[:6]}
+        raise RuntimeError(
+            f"load_medqa: 0 items parsed from {name!r} split={split!r}. "
+            f"Skipped reasons: {skipped}. First-row keys: {keys}. "
+            f"First-row preview: {preview}"
+        )
 
     if n is not None and n < len(items):
         import random
