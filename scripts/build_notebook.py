@@ -86,7 +86,7 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 """))
 
 cells.append(code(wrap("env check", f"""
-import os, sys, subprocess, json, time, traceback
+import os, sys, subprocess, json, time, traceback, importlib
 from pathlib import Path
 import torch
 
@@ -100,14 +100,30 @@ REPO_URL = '{REPO_URL}'
 REPO_DIR = 'diagnosticpercept'
 if not Path(REPO_DIR).exists():
     print('Cloning', REPO_URL, '...')
-    subprocess.run(['git', 'clone', '--depth', '1', REPO_URL, REPO_DIR], check=True)
+    subprocess.run(['git', 'clone', REPO_URL, REPO_DIR], check=True)
 else:
-    print('Pulling', REPO_DIR, '...')
-    subprocess.run(['git', '-C', REPO_DIR, 'pull', '--ff-only'], check=False)
-sys.path.insert(0, str(Path(REPO_DIR).resolve()))
+    # Hard-reset to origin/main so re-runs always pick up the latest code.
+    print('Fetching + hard-resetting to origin/main ...')
+    subprocess.run(['git', '-C', REPO_DIR, 'fetch', 'origin', 'main'], check=False)
+    subprocess.run(['git', '-C', REPO_DIR, 'reset', '--hard', 'origin/main'], check=False)
+
+# Print current SHA so we can verify the running version.
+sha = subprocess.run(['git', '-C', REPO_DIR, 'rev-parse', '--short', 'HEAD'],
+                     capture_output=True, text=True).stdout.strip()
+print(f'Repo @ commit: {{sha}}  (expect 8635794 or newer for H4+H5)')
+
+# Drop any previously-imported src.* modules so Python re-loads from disk —
+# a kernel re-run with the prior clone may have cached the old discover.py.
+for m in [k for k in list(sys.modules) if k == 'src' or k.startswith('src.')]:
+    del sys.modules[m]
+importlib.invalidate_caches()
+
+repo_path = str(Path(REPO_DIR).resolve())
+if repo_path not in sys.path:
+    sys.path.insert(0, repo_path)
 
 RESULTS = Path('/content/results'); RESULTS.mkdir(parents=True, exist_ok=True)
-print('Repo   :', Path(REPO_DIR).resolve())
+print('Repo   :', repo_path)
 print('Results:', RESULTS)
 """)))
 
