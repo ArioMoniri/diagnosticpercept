@@ -43,6 +43,28 @@
     "Explain the pathophysiology of atherosclerosis.",
     "What are the four phases of the cell cycle?"
   ],
+  "hard_cases": [
+    "A 62-year-old smoker with chronic productive cough now has 6 weeks of worsening dyspnea on exertion. SpO2 88% on room air, JVP 7 cm, bilateral basilar crackles, mild lower-extremity edema, BNP 480 pg/mL, ECG with right axis deviation, BMI 32. What is the most likely diagnosis?",
+    "A 47-year-old woman with three months of fatigue, 8 kg weight gain, cold intolerance, constipation, dry skin, and bradycardia 52. TSH 9.2 mIU/L, free T4 0.7 ng/dL, anti-TPO positive. What is the most likely diagnosis?",
+    "A 28-year-old man with three days of fever 39.4, severe headache, photophobia, neck stiffness. LP: opening pressure 30 cm H2O, WBC 1200 with 90% lymphocytes, protein 95 mg/dL, glucose 35 mg/dL (serum 110). What is the most likely diagnosis?",
+    "A 71-year-old with progressive memory loss over 18 months, getting lost in familiar places, MoCA 18/30, MRI showing bilateral hippocampal atrophy, no focal deficits, no parkinsonism. What is the most likely diagnosis?",
+    "A 34-year-old woman with episodic palpitations, headaches, sweating, and BP 198/118 during episodes. 24-hour urine metanephrines elevated 4x normal. What is the most likely diagnosis?",
+    "A 58-year-old presents with progressive dysphagia to solids then liquids, 12 kg weight loss, and barium swallow showing a distal esophageal mass with proximal dilation. What is the most likely diagnosis?",
+    "A 24-year-old with intermittent right lower quadrant pain, non-bloody diarrhea, 6 kg weight loss, oral aphthous ulcers, perianal fistula, CRP 60, fecal calprotectin 1800. What is the most likely diagnosis?",
+    "A 67-year-old with 4 months of bone pain, fatigue, recurrent infections. Labs: Hgb 8.2, calcium 11.6, creatinine 2.1, total protein 9.8, albumin 3.0, M-spike on SPEP. What is the most likely diagnosis?",
+    "A 19-year-old healthy woman now with sudden-onset pleuritic chest pain and dyspnea three days after a long-haul flight. HR 118, SpO2 92%, D-dimer 4800 ng/mL. What is the most likely diagnosis?",
+    "A 42-year-old man with three weeks of fevers, drenching night sweats, and 7 kg weight loss. PE: painless cervical adenopathy 4 cm, splenomegaly. CBC normal, LDH 480, biopsy shows Reed-Sternberg cells. What is the most likely diagnosis?",
+    "A 55-year-old chronic alcoholic with hematemesis, BP 88/52, HR 124, scleral icterus, ascites, spider angiomata, INR 1.9, platelets 65. What is the most likely diagnosis?",
+    "A 5-year-old with three weeks of polyuria, polydipsia, fatigue, blurred vision, weight loss 4 kg. Blood glucose 412 mg/dL, anion gap 14, bicarb 18, urine ketones positive, no obesity, normal C-peptide low. What is the most likely diagnosis?",
+    "A 32-year-old G1P0 at 30 weeks with new-onset hypertension 158/102, proteinuria 2+, headache, visual scotomata, AST 88, platelets 122. What is the most likely diagnosis?",
+    "A 65-year-old with 6 months of progressive proximal muscle weakness, difficulty climbing stairs, heliotrope rash on eyelids, Gottron papules on knuckles, CK 4800. What is the most likely diagnosis?",
+    "A 9-year-old with 4 days of fever, conjunctivitis without exudate, strawberry tongue, cracked lips, polymorphous rash, cervical adenopathy, swollen hands and feet. What is the most likely diagnosis?",
+    "A 78-year-old on warfarin with sudden left-sided weakness, dysarthria, NIHSS 14. Non-contrast CT shows hyperdense MCA sign, no hemorrhage. Onset 90 minutes ago. What is the most likely diagnosis and immediate management?",
+    "A 38-year-old woman with chronic 8/10 right upper quadrant pain after meals for 2 years, normal LFTs, normal abdominal US, EGD and colonoscopy normal, HIDA scan with ejection fraction 22%. What is the most likely diagnosis?",
+    "A 51-year-old with progressive ascending weakness over 5 days, areflexia, mild dysautonomia, recent gastroenteritis 10 days ago. CSF protein 110 with normal cell count. What is the most likely diagnosis?",
+    "A 29-year-old African-American woman with bilateral hilar lymphadenopathy on chest X-ray, mild dyspnea, erythema nodosum on shins, uveitis, elevated ACE level. What is the most likely diagnosis?",
+    "A 60-year-old man on hemodialysis with 24 hours of severe left-knee pain and swelling, fever 38.6. Joint aspiration: WBC 95000 with 92% neutrophils, gram stain positive cocci in clusters. What is the most likely diagnosis?"
+  ],
   "commitment_phrases": [
     "The diagnosis is",
     "Most likely",

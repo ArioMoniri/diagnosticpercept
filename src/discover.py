@@ -301,3 +301,65 @@ def best_multiplier(sweep_results: Sequence[SweepResult]) -> Tuple[int, int, flo
         raise ValueError("Empty sweep results.")
     best = min(sweep_results, key=lambda r: r.target_logprob)
     return best.layer, best.neuron, best.multiplier
+
+
+def best_multiplier_with_capability(
+    sweep_results: Sequence[SweepResult],
+    capability_logprob: Dict[Tuple[int, int, float], float],
+    baseline_logprob: float,
+    lambda_cap: float = 1.0,
+) -> Tuple[int, int, float, Dict[Tuple[int, int, float], float]]:
+    """Select (layer, neuron, m) maximizing suppression *minus* capability cost.
+
+    score(L, N, m) = (baseline_target_logprob - target_logprob)        # suppression
+                   - lambda_cap * (baseline_capability - capability_at_m)   # cost
+
+    Both terms are in log-prob space. We pass in:
+
+    - ``sweep_results``: the H1 sweep on probe vignettes (one row per (L, N, m)).
+    - ``capability_logprob[(L, N, m)]``: model's mean log-prob of the
+      next-token target on a held-out *capability* set (the hard diagnostic
+      cases). Lower under intervention = capability lost.
+    - ``baseline_logprob``: capability log-prob at m=0 (no intervention).
+
+    Returns the winning triple and the per-row composite scores.
+    """
+    if not sweep_results:
+        raise ValueError("Empty sweep results.")
+    baseline_target = next(
+        (r.target_logprob for r in sweep_results if r.multiplier == 0.0),
+        max(r.target_logprob for r in sweep_results),
+    )
+    composite: Dict[Tuple[int, int, float], float] = {}
+    for r in sweep_results:
+        key = (r.layer, r.neuron, r.multiplier)
+        cap = capability_logprob.get(key, baseline_logprob)
+        suppression = baseline_target - r.target_logprob       # larger = better
+        cap_cost = baseline_logprob - cap                       # larger = worse
+        composite[key] = suppression - lambda_cap * cap_cost
+    L, N, m = max(composite, key=composite.get)
+    return L, N, m, composite
+
+
+@torch.no_grad()
+def mean_target_logprob_under(
+    lm: LoadedModel,
+    candidates: Sequence[NeuronScore],
+    capability_prompts: Sequence[str],
+    target_phrases: Sequence[str],
+    icd10_tokens: Sequence[str],
+    multipliers: Sequence[float] = DEFAULT_M_SWEEP,
+) -> Dict[Tuple[int, int, float], float]:
+    """Mean target-log-prob on ``capability_prompts`` under each (cand, m) pair.
+
+    ``capability_prompts`` should be cases the *unmodified* model handles well
+    (e.g., hard diagnostic vignettes). Drops here = capability loss.
+    """
+    target_ids = _target_first_token_ids(lm.tokenizer, target_phrases, icd10_tokens)
+    out: Dict[Tuple[int, int, float], float] = {}
+    for cand in tqdm(candidates, desc="capability sweep", leave=False):
+        for m in multipliers:
+            with constant_intervention(lm.layers, cand.neuron, m, cand.layer):
+                lp = _mean_target_logprob(lm, capability_prompts, target_ids)
+            out[(cand.layer, cand.neuron, float(m))] = lp
+    return out

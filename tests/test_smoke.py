@@ -153,6 +153,27 @@ def test_h3_patch_layers_and_drill(lm):
     assert len(drill) > 0
 
 
+def test_h4_hallucinate(lm):
+    """H4 produces classifications + ranked hallucination neurons (tiny set)."""
+    from src.data import build_h4
+    from src.hallucinate import find_hallucination_neurons
+
+    h4 = build_h4()
+    neurons, classifications = find_hallucination_neurons(
+        lm,
+        trap_prompts=h4["trap"][:4],
+        pathognomonic_prompts=h4["pathognomonic"][:3],
+        hedge_prompts=["A patient reports fatigue. What is the differential?"],
+        target_phrases=h4["commitment_phrases"],
+        icd10_tokens=h4["icd10_tokens"],
+        layer_range=(0, max(2, lm.n_layers // 4)),
+        top_k=3,
+        commit_p_threshold=0.0,  # force at least some commits on tiny model
+    )
+    assert "trap" in classifications and "pathognomonic" in classifications
+    assert isinstance(neurons, list)  # may be empty on Qwen3-0.6B
+
+
 def test_eval_helpers():
     from src.eval import score_hedging, score_injection
 

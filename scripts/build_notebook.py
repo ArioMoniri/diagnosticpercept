@@ -229,10 +229,14 @@ for c in cands:
     print(f'  L{c.layer:>2}:F{c.neuron:<6}  score={c.score:+.4f}  a_pos={c.a_pos:+.3f}  a_neg={c.a_neg:+.3f}')
 """)))
 
-cells.append(code(wrap("H1 — multiplier sweep over top-5", """
+cells.append(code(wrap("H1 — multiplier sweep over top-5 + capability cost", """
 from types import SimpleNamespace
+from src.discover import best_multiplier_with_capability, mean_target_logprob_under, _target_first_token_ids, _mean_target_logprob
+
 sweep_path = H1_RESULTS / 'sweep.json'
+cap_path = H1_RESULTS / 'capability_sweep.json'
 probe = h1['positive'][:8]
+hard_for_capability = h1['hard_cases'][:8]  # cases the unmodified model handles
 
 if sweep_path.exists():
     sweep_raw = json.loads(sweep_path.read_text())
@@ -246,21 +250,52 @@ else:
     sweep_raw = [s.__dict__ for s in sw]
     sweep_path.write_text(json.dumps(sweep_raw, indent=2))
 
+# Capability sweep: same (cand × m) grid, but evaluated on the HARD cases.
+# Drops in this log-prob = capability loss under the intervention.
+if cap_path.exists():
+    capability_lp = {tuple(eval(k)): v for k, v in json.loads(cap_path.read_text()).items()}
+    print(f'Reloaded capability sweep ({len(capability_lp)} entries)')
+else:
+    capability_lp = mean_target_logprob_under(
+        lm, candidates=cands, capability_prompts=hard_for_capability,
+        target_phrases=h1['commitment_phrases'], icd10_tokens=h1['icd10_tokens'],
+        multipliers=DEFAULT_M_SWEEP,
+    )
+    cap_path.write_text(json.dumps({str(k): v for k, v in capability_lp.items()}, indent=2))
+
+# Baseline (no intervention) capability log-prob.
+target_ids = _target_first_token_ids(lm.tokenizer, h1['commitment_phrases'], h1['icd10_tokens'])
+baseline_cap = _mean_target_logprob(lm, hard_for_capability, target_ids)
+print(f'Baseline capability log-prob (no intervention): {baseline_cap:+.4f}')
+
 import matplotlib.pyplot as plt
-fig, ax = plt.subplots(figsize=(8, 5))
-by_neuron = {}
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+by_n_sup = {}
+by_n_cap = {}
 for s in sweep_raw:
-    by_neuron.setdefault((s['layer'], s['neuron']), []).append((s['multiplier'], s['target_logprob']))
-for (L, N), pts in by_neuron.items():
-    pts.sort()
-    xs, ys = zip(*pts)
-    ax.plot(xs, ys, marker='o', label=f'L{L}:F{N}')
-ax.set_xlabel('multiplier m'); ax.set_ylabel('mean target log-prob (lower = suppressed)')
-ax.set_title('H1: top-5 suppression sweep'); ax.legend(fontsize=8); ax.grid(alpha=0.3)
+    k = (s['layer'], s['neuron'])
+    by_n_sup.setdefault(k, []).append((s['multiplier'], s['target_logprob']))
+for (L, N, m), lp in capability_lp.items():
+    by_n_cap.setdefault((L, N), []).append((m, lp))
+for k, pts in by_n_sup.items():
+    pts.sort(); xs, ys = zip(*pts); axes[0].plot(xs, ys, marker='o', label=f'L{k[0]}:F{k[1]}')
+for k, pts in by_n_cap.items():
+    pts.sort(); xs, ys = zip(*pts); axes[1].plot(xs, ys, marker='o', label=f'L{k[0]}:F{k[1]}')
+axes[0].set_title('suppression on probe set (lower = more suppressed)')
+axes[1].set_title('capability on hard cases (lower = more capability lost)')
+for ax in axes:
+    ax.set_xlabel('multiplier m'); ax.set_ylabel('mean target log-prob')
+    ax.legend(fontsize=7); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H1_RESULTS / 'sweep.png', dpi=140); plt.show()
 
-L_star, N_star, m_star = best_multiplier([SimpleNamespace(**s) for s in sweep_raw])
-print(f'\\nBest gate: L{L_star}:F{N_star} at m={m_star}')
+# Composite m* selection: suppression - lambda * capability_cost.
+sweep_objs = [SimpleNamespace(**s) for s in sweep_raw]
+L_star, N_star, m_star, composite = best_multiplier_with_capability(
+    sweep_objs, capability_lp, baseline_cap, lambda_cap=1.0,
+)
+print(f'\\nBest gate (capability-aware): L{L_star}:F{N_star} at m={m_star}')
+naive_L, naive_N, naive_m = best_multiplier(sweep_objs)
+print(f'  (naive max-suppression would have picked: L{naive_L}:F{naive_N} at m={naive_m})')
 """)))
 
 cells.append(code(wrap("H1 — activation distribution at winning neuron", """
@@ -285,32 +320,14 @@ ax.legend(); ax.grid(alpha=0.3); plt.tight_layout()
 plt.savefig(H1_RESULTS / 'activations.png', dpi=140); plt.show()
 """)))
 
-cells.append(code(wrap("H1 — MedQA-mini capability check (Eq. 7 anchor)", """
-from src.hooks import anchor_intervention
+cells.append(code(wrap("H1 — hard-case capability check (anchor Eq. 7)", """
+from src.hooks import anchor_intervention, constant_intervention
 from src.eval import score_hedging
 
-MEDQA_MINI = [
-    'What is the first-line treatment for hypertension?',
-    'Name the four chambers of the heart.',
-    'What is the normal range for fasting glucose?',
-    'What does HbA1c measure?',
-    'What is the mechanism of beta-blockers?',
-    'Name three causes of microcytic anemia.',
-    'What is the difference between Type 1 and Type 2 diabetes?',
-    'What are the components of CHA2DS2-VASc?',
-    'What is the antidote for acetaminophen overdose?',
-    'What is the Glasgow Coma Scale?',
-    'Define sepsis.',
-    'What are red flag symptoms in low back pain?',
-    'What is the mechanism of metformin?',
-    'Name three side effects of corticosteroids.',
-    'What is the function of the liver?',
-    'What are the stages of chronic kidney disease?',
-    'What is the most common cause of community-acquired pneumonia?',
-    'What are the criteria for diagnosing major depression?',
-    'What is the function of the parathyroid hormone?',
-    'Define anaphylaxis.',
-]
+# Use HARD diagnostic vignettes: messy, multi-finding cases that require
+# committing to a working diagnosis. Easy fact recall (\"chambers of the heart\")
+# doesn't test the diagnosis-gate behavior at all.
+HARD_CAPABILITY = h1['hard_cases'][:20]
 
 def gen(prompt, max_new=64):
     enc = lm.tokenizer(prompt, return_tensors='pt').to(lm.device)
@@ -325,17 +342,27 @@ d = float(best_cand.a_pos - best_cand.a_neg) or 1e-3
 print(f'Anchor d = {d:.4f} | m* = {m_star}')
 
 capability = []
-for q in MEDQA_MINI:
-    baseline = gen(q, 48)
+for q in HARD_CAPABILITY:
+    baseline = gen(q, 64)
+    with constant_intervention(lm.layers, N_star, m_star, L_star):
+        const = gen(q, 64)
     with anchor_intervention(lm.layers, N_star, m_star, d, L_star, k=1.0):
-        anchor = gen(q, 48)
-    capability.append({'q': q, 'baseline': baseline, 'anchor': anchor})
+        anchor = gen(q, 64)
+    bh = score_hedging(baseline); ch = score_hedging(const); ah = score_hedging(anchor)
+    capability.append({
+        'q': q, 'baseline': baseline, 'constant': const, 'anchor': anchor,
+        'baseline_hedge': bh.is_hedging, 'constant_hedge': ch.is_hedging, 'anchor_hedge': ah.is_hedging,
+    })
+
+# Summary: how often each mode hedges (we expect anchor to hedge more than baseline).
+def rate(key): return sum(int(r[key]) for r in capability) / max(1, len(capability))
+print(f'Hedge rate:  baseline={rate("baseline_hedge"):.2f}  constant={rate("constant_hedge"):.2f}  anchor={rate("anchor_hedge"):.2f}')
 
 for row in capability[:3]:
-    print('Q :', row['q'])
+    print('\\nCASE:', row['q'][:120], '...')
     print(' baseline:', row['baseline'][:200])
+    print(' constant:', row['constant'][:200])
     print(' anchor  :', row['anchor'][:200])
-    print()
 (H1_RESULTS / 'capability.json').write_text(json.dumps(capability, indent=2))
 """)))
 
@@ -374,10 +401,14 @@ else:
         {k: [c.__dict__ for c in v] for k, v in concepts.items()}, indent=2))
 """)))
 
-cells.append(code(wrap("H2 — amplification matrix (disease × prompt × multiplier)", """
+cells.append(code(wrap("H2 — amplification matrix (relative multipliers)", """
+# Multipliers are RELATIVE to each neuron's natural activation scale
+# (multiplier * max(|mean_pos|, |mean_neg|)). Absolute multipliers in the
+# 20-160 range previously saturated the residual stream and produced
+# token-degenerate output — see prior 0/4 injection rate.
 amp_path = H2_RESULTS / 'amplification.json'
 benign = h2['_benign_prompts']['positive'][:4]
-multipliers = [0.0, 20.0, 80.0, 160.0]
+multipliers = [0.0, 1.0, 2.0, 4.0, 8.0]
 
 if amp_path.exists():
     amp_results = json.loads(amp_path.read_text())
@@ -386,10 +417,12 @@ else:
     amp_results = {}
     for disease, neurons in concepts.items():
         c = neurons[0]
-        print(f'Amplifying {disease} via L{c.layer}:F{c.neuron} ...')
+        scale = max(abs(c.mean_pos), abs(c.mean_neg), 1e-6)
+        print(f'Amplifying {disease} via L{c.layer}:F{c.neuron} (scale={scale:.3f})')
         rows = amplification_matrix(
             lm, neuron=c, benign_prompts=benign, multipliers=multipliers,
             max_new_tokens=64, concept_keywords=DISEASE_KEYWORDS[disease],
+            relative=True,
         )
         amp_results[disease] = [r.__dict__ for r in rows]
     amp_path.write_text(json.dumps(amp_results, indent=2))
@@ -502,7 +535,94 @@ if len(patch_data) > 1:
     plt.tight_layout(); plt.savefig(H3_RESULTS / 'heatmap.png', dpi=140); plt.show()
 """)))
 
-cells.append(md("## 6. Persist run metadata"))
+cells.append(md(
+    "## 6. H4 — hallucination / false-confidence neurons\n\n"
+    "We push the model past its knowledge limit with a *trap* set: "
+    "under-specified vignettes (single sign, no workup), contradictory "
+    "findings, rare/exotic real diseases, and **fabricated syndromes** "
+    "(controls — any commitment is hallucination by construction). "
+    "A clinician would refuse or ask for more info; the model usually "
+    "commits anyway. The neurons that fire on **trap-committed** prompts "
+    "but stay silent on **hedged** prompts isolate the commitment gate. "
+    "Subtracting the **pathognomonic-committed** activation map leaves the "
+    "*false-confidence* component: neurons that fire harder when the "
+    "knowledge is insufficient than when it is solid."
+))
+
+cells.append(code(wrap("H4 — classify + find hallucination neurons", """
+from src.data import build_h4
+from src.hallucinate import find_hallucination_neurons, HallucinationNeuron
+
+H4_RESULTS = RESULTS / 'h4'; H4_RESULTS.mkdir(exist_ok=True)
+h4 = build_h4()
+print(f'Trap set: {len(h4["trap"])} prompts')
+print(f'Pathognomonic: {len(h4["pathognomonic"])} prompts')
+
+halluc_path = H4_RESULTS / 'hallucination_neurons.json'
+classif_path = H4_RESULTS / 'classifications.json'
+if halluc_path.exists():
+    halluc_neurons = [HallucinationNeuron(**c) for c in json.loads(halluc_path.read_text())]
+    classifications = json.loads(classif_path.read_text())
+    print(f'Reloaded {len(halluc_neurons)} hallucination neurons')
+else:
+    halluc_neurons, classifications = find_hallucination_neurons(
+        lm,
+        trap_prompts=h4['trap'],
+        pathognomonic_prompts=h4['pathognomonic'][:10],     # representative pathognomonic
+        hedge_prompts=h1['negative'][:10],                  # ambiguous control
+        target_phrases=h4['commitment_phrases'],
+        icd10_tokens=h4['icd10_tokens'],
+        layer_range=None,  # auto: layers >= n_layers // 3
+        top_k=10,
+        commit_p_threshold=0.10,
+    )
+    halluc_path.write_text(json.dumps([n.__dict__ for n in halluc_neurons], indent=2))
+    classif_path.write_text(json.dumps(classifications, indent=2))
+
+# How often did the model commit when it shouldn't have?
+def commit_rate(bucket):
+    rows = classifications[bucket]
+    return sum(1 for _, c, _ in rows if c) / max(1, len(rows))
+
+print()
+print(f'Commit rate on trap  (should be ~0 ideally): {commit_rate("trap"):.2f}')
+print(f'Commit rate on pathognomonic (should be high): {commit_rate("pathognomonic"):.2f}')
+print(f'Commit rate on hedge (should be ~0):          {commit_rate("hedge"):.2f}')
+
+# Show committed traps (these are the hallucinations).
+print('\\nTrap prompts the model COMMITTED to (hallucinations):')
+for p, committed, gen in classifications['trap']:
+    if committed:
+        print(f'  Q: {p[:90]}...')
+        print(f'     -> {gen[:140]}')
+
+print('\\nTop hallucination neurons (delta = a_trap_commit - a_pathognomonic):')
+for n in halluc_neurons:
+    print(f'  L{n.layer:>2}:F{n.neuron:<6}  delta={n.delta:+.3f}  '
+          f'a_trap={n.a_trap:+.3f}  a_pathog={n.a_pathog:+.3f}  a_hedge={n.a_hedge:+.3f}')
+""")))
+
+cells.append(code(wrap("H4 — layer profile of hallucination signal", """
+# Aggregate delta by layer to see WHERE the false-confidence signal lives.
+import numpy as np, matplotlib.pyplot as plt
+by_layer = {}
+for n in halluc_neurons:
+    by_layer.setdefault(n.layer, []).append(n.delta)
+layers = sorted(by_layer)
+mean_delta = [float(np.mean(by_layer[L])) for L in layers]
+max_delta = [float(np.max(by_layer[L])) for L in layers]
+
+fig, ax = plt.subplots(figsize=(9, 4))
+ax.plot(layers, mean_delta, marker='o', label='mean delta (top-10 per layer)')
+ax.plot(layers, max_delta, marker='s', label='max delta')
+ax.axhline(0, color='k', lw=0.5)
+ax.set_xlabel('layer'); ax.set_ylabel('a_trap_commit - a_pathognomonic_commit')
+ax.set_title('H4 — false-confidence signal by layer')
+ax.legend(); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.savefig(H4_RESULTS / 'layer_profile.png', dpi=140); plt.show()
+""")))
+
+cells.append(md("## 7. Persist run metadata"))
 
 cells.append(code(wrap("write run.json", """
 import subprocess, datetime
@@ -518,6 +638,11 @@ manifest = {
             'amplification': str(H2_RESULTS / 'amplification.json')},
     'h3': {'patch_layers': str(H3_RESULTS / 'patch_layers.json'),
             'critical_layer': int(critical)},
+    'h4': {'hallucination_neurons': str(H4_RESULTS / 'hallucination_neurons.json'),
+            'classifications': str(H4_RESULTS / 'classifications.json'),
+            'commit_rate_trap': commit_rate('trap'),
+            'commit_rate_pathognomonic': commit_rate('pathognomonic'),
+            'commit_rate_hedge': commit_rate('hedge')},
 }
 (RESULTS / 'run.json').write_text(json.dumps(manifest, indent=2))
 print(json.dumps(manifest, indent=2))

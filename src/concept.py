@@ -125,17 +125,30 @@ def amplification_matrix(
     lm: LoadedModel,
     neuron: ConceptNeuron,
     benign_prompts: Sequence[str],
-    multipliers: Sequence[float] = (0.0, 10.0, 40.0, 80.0, 160.0),
+    multipliers: Sequence[float] = (0.0, 1.0, 2.0, 4.0, 8.0),
     max_new_tokens: int = 64,
     concept_keywords: Optional[Sequence[str]] = None,
+    relative: bool = True,
 ) -> List[AmplificationResult]:
-    """Additive amplification on benign prompts; flag mentions of ``concept_keywords``."""
+    """Additive amplification on benign prompts; flag mentions of ``concept_keywords``.
+
+    ``relative=True`` (default) scales each multiplier by ``max(|mean_pos|,
+    |mean_neg|)`` so the additive perturbation stays on the natural activation
+    scale of the neuron. Without this, absolute multipliers like 80–160 push
+    activations 100× beyond their normal range and yield token-degenerate
+    output (the prior 0/4 injection rate). Set ``relative=False`` for the
+    paper's absolute behavior.
+    """
     tok = lm.tokenizer
     keywords = [k.lower() for k in (concept_keywords or [neuron.disease.lower()])]
+    scale = (
+        max(abs(neuron.mean_pos), abs(neuron.mean_neg), 1e-6) if relative else 1.0
+    )
     out: List[AmplificationResult] = []
     for prompt in benign_prompts:
         for m in multipliers:
-            with additive_intervention(lm.layers, neuron.neuron, float(m), neuron.layer):
+            amount = float(m) * scale
+            with additive_intervention(lm.layers, neuron.neuron, amount, neuron.layer):
                 enc = tok(prompt, return_tensors="pt").to(lm.device)
                 gen_ids = lm.model.generate(
                     **enc, max_new_tokens=max_new_tokens, do_sample=False,
