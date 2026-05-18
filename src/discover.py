@@ -112,8 +112,8 @@ def _per_token_stats(
             mlp = layers[L].mlp
             h = mlp._h                                        # [1, T_total, d_ff]
             g = h.grad if h.grad is not None else torch.zeros_like(h)
-            a_win = h[0, -window:, :].detach().float()         # [window, d_ff]
-            g_win = g[0, -window:, :].detach().float()
+            a_win = h[0, -window:, :].detach().float().cpu()   # [window, d_ff]
+            g_win = g[0, -window:, :].detach().float().cpu()
             # Pad to WINDOW length so accumulators have a fixed shape.
             if window < WINDOW:
                 pad = WINDOW - window
@@ -125,7 +125,14 @@ def _per_token_stats(
             accum_a[L] += a_win
             accum_g[L] += g_win
 
+        # Free the autograd graph + cached activations between prompts to keep
+        # peak VRAM bounded (matters on T4 / L4 where Med42-8B in 4-bit already
+        # sits at ~5 GB after load).
+        del out, loss
         clear_h(layers)
+        lm.model.zero_grad(set_to_none=True)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         count += 1
 
     if count == 0:

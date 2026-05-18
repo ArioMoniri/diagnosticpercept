@@ -75,8 +75,15 @@ full traceback printing so Colab failures are visible.
 cells.append(md("## 1. Setup — install, GPU check, clone, HF login"))
 
 cells.append(code(
-    "!pip -q install 'transformers>=4.44' accelerate scikit-learn matplotlib tqdm datasets nbformat 2>&1 | tail -5"
+    "!pip -q install 'transformers>=4.44' accelerate bitsandbytes scikit-learn matplotlib tqdm datasets nbformat 2>&1 | tail -5"
 ))
+
+# Set CUDA alloc config BEFORE torch imports anywhere — must be very first.
+cells.append(code("""
+import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+"""))
 
 cells.append(code(wrap("env check", f"""
 import os, sys, subprocess, json, time, traceback
@@ -133,35 +140,57 @@ set_seed(0)
 PRIMARY = 'm42-health/Llama3-Med42-8B'
 FALLBACK = 'aaditya/Llama3-OpenBioLLM-8B'
 
+# Auto-pick precision: 8B in bf16 = ~16 GB weights. Need ~24 GB total VRAM
+# for safe fwd+bwd. Below that, use 4-bit NF4 (~5 GB weights, bf16 compute).
+if torch.cuda.is_available():
+    total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+else:
+    total_gb = 0
+USE_4BIT = total_gb < 24.0
+print(f'GPU total: {total_gb:.1f} GB  |  use_4bit = {USE_4BIT}')
+
 token = os.environ.get('HF_TOKEN')
 try:
     print(f'Trying {PRIMARY} ...')
-    lm = load_model(PRIMARY, token=token)
+    lm = load_model(PRIMARY, token=token, quantize_4bit=USE_4BIT)
     MODEL_NAME = PRIMARY
 except Exception as e:
     print(f'Med42 load failed: {e}')
     print(f'Falling back to {FALLBACK} ...')
-    lm = load_model(FALLBACK, token=token)
+    lm = load_model(FALLBACK, token=token, quantize_4bit=USE_4BIT)
     MODEL_NAME = FALLBACK
 
-print(f'\\nLoaded: {MODEL_NAME}')
-print(f'  layers = {lm.n_layers}')
-print(f'  d_ff   = {lm.d_ff}')
-print(f'  dtype  = {lm.dtype}')
-print(f'  device = {lm.device}')
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    used = torch.cuda.memory_allocated() / 1e9
+    print(f'\\nLoaded: {MODEL_NAME}')
+    print(f'  layers = {lm.n_layers}')
+    print(f'  d_ff   = {lm.d_ff}')
+    print(f'  dtype  = {lm.dtype}')
+    print(f'  device = {lm.device}')
+    print(f'  VRAM used after load: {used:.2f} GB')
+else:
+    print(f'\\nLoaded: {MODEL_NAME} (CPU)')
+    print(f'  layers = {lm.n_layers}  d_ff = {lm.d_ff}')
 """)))
 
 cells.append(code(wrap("sanity: h.retain_grad flows", """
-ids = lm.tokenizer('The patient has crushing chest pain. Diagnosis:', return_tensors='pt').input_ids.to(lm.device)
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+ids = lm.tokenizer('Chest pain. Diagnosis:', return_tensors='pt').input_ids.to(lm.device)
 lm.model.zero_grad(set_to_none=True)
 with torch.enable_grad():
     out = lm.model(input_ids=ids, use_cache=False)
-    out.logits[0, -1].sum().backward()
+    # logit at last position only — no need for full vocab sum.
+    out.logits[0, -1, 0].backward()
 g = lm.layers[0].mlp._h.grad
 assert g is not None, 'h.grad is None — hook patching failed.'
 assert torch.isfinite(g).all(), 'h.grad has non-finite values.'
 assert g.abs().sum() > 0, 'h.grad is all zeros.'
 print('OK: layer-0 h.grad shape', tuple(g.shape), 'nonzero =', (g.abs() > 0).sum().item())
+if torch.cuda.is_available():
+    torch.cuda.empty_cache()
+    print(f'  VRAM after sanity: {torch.cuda.memory_allocated()/1e9:.2f} GB')
 """)))
 
 cells.append(md(

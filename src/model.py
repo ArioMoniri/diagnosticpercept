@@ -104,10 +104,16 @@ def load_model(
     device_map: str | dict | None = "auto",
     trust_remote_code: bool = True,
     token: str | None = None,
+    quantize_4bit: bool = False,
 ) -> LoadedModel:
     """Load a causal LM and patch every MLP to expose ``h`` with ``retain_grad``.
 
-    bf16 throughout (do not silently fall back to fp16/fp32 — see CLAUDE.md).
+    bf16 throughout for the compute path. ``quantize_4bit=True`` stores weights
+    in NF4 via bitsandbytes (~5 GB for an 8B model) while keeping the compute
+    dtype at bf16 — needed on Colab T4 / L4 (≤16 GB VRAM).
+
+    bitsandbytes ``Linear4bit`` keeps activations in bf16, so ``h.retain_grad``
+    still flows correctly through the de-quantization op for H1.
     """
     set_seed()
     tok = AutoTokenizer.from_pretrained(
@@ -117,13 +123,26 @@ def load_model(
         tok.pad_token = tok.eos_token
     tok.padding_side = "left"
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+    kwargs = dict(
         torch_dtype=dtype,
         device_map=device_map,
         trust_remote_code=trust_remote_code,
         token=token,
     )
+    if quantize_4bit:
+        from transformers import BitsAndBytesConfig
+        kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=dtype,
+        )
+        # device_map="auto" is required for 4-bit; remove explicit dtype to
+        # avoid HF complaining about dtype on already-quantized weights.
+        kwargs.pop("torch_dtype", None)
+        kwargs["device_map"] = "auto"
+
+    model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
     model.eval()
 
     layers = _resolve_layers(model)
