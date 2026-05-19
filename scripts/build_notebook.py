@@ -846,7 +846,9 @@ for cond, rows in all_results.items():
     print(f'\\n========== {cond} (sample of {EX}) ==========')
     for r in rows[:EX]:
         verdict = 'OK ' if r.correct else 'ERR'
-        print(f'\\n[{verdict}] gold={r.gold}  pred={r.predicted}  p_top1={r.p_top1:.3f}')
+        print(f'\\n[{verdict}] gold={r.gold}  pred={r.predicted}  '
+              f'p@ans={r.p_top1_at_answer:.3f}  p_gold@ans={r.p_gold_at_answer:.3f}  '
+              f'ans_found={r.answer_pos_found}')
         print('Q :', textwrap.shorten(r.question, 200))
         rsn = r.reasoning or '(no parsed reasoning — raw_output:)'
         print('R :', textwrap.shorten(rsn or r.raw_output, 300))
