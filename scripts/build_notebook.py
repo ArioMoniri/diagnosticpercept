@@ -769,9 +769,12 @@ from src.healthbench import (
 
 H6_RESULTS = RESULTS / 'h6'; H6_RESULTS.mkdir(exist_ok=True)
 
-# 100 questions x 6 conditions ≈ 30 min wall on A100 with reasoning chains
-# (~200 new tokens / question). Set to None for the full ~1273-question set.
-N_BENCH = 100
+# H6 mode selection:
+#   FAST     = 100 q × all 6 conditions  → ~30 min  (broad scan)
+#   DEEP     = 1273 q × 3 conditions     → ~3 hr    (full MedQA on the 3 informative conditions)
+# Override by setting N_BENCH / CONDITION_KEYS below.
+H6_MODE = 'DEEP'  # 'FAST' or 'DEEP'
+N_BENCH = 1273 if H6_MODE == 'DEEP' else 100
 DATASET = 'GBaker/MedQA-USMLE-4-options-hf'
 print(f'Loading {DATASET} (n={N_BENCH or "ALL"})')
 items = load_medqa(DATASET, split='test', n=N_BENCH, seed=0)
@@ -793,11 +796,10 @@ print('H3 critical layer :', f'L{critical}  (mean patch score {mean_per_layer[cr
 print('H4 top-3 halluc   :', top_halluc)
 print('H5 top-3 overconf :', top_overconf)
 
-# Six conditions: baseline + one per hypothesis + a combined calibration probe.
-# Each condition runs the *same* questions through the same prompt, so the
-# resulting CSV is a direct same-question diff of how each intervention
-# changes both the answer letter AND the reasoning chain.
-CONDITIONS = {
+# Conditions: in DEEP mode we run only the three most informative on the
+# full 1273-question test set. In FAST mode we run all six on a 100-question
+# subset for a broad scan.
+ALL_CONDITIONS = {
     'baseline':            None,
     'h1_gate_anchor':      anchor_factory(lm.layers, L_star, N_star, m_star, anchor_d, k=1.0),
     'h3_zero_layer':       zero_mlp_factory(lm.layers, [critical]),
@@ -805,12 +807,18 @@ CONDITIONS = {
     'h5_ablate_overconf':  ablate_neurons_factory(lm.layers, top_overconf),
     'h4_h5_combined':      ablate_neurons_factory(lm.layers, combined),
 }
+DEEP_KEYS = ['baseline', 'h1_gate_anchor', 'h5_ablate_overconf']
+CONDITIONS = (
+    {k: ALL_CONDITIONS[k] for k in DEEP_KEYS} if H6_MODE == 'DEEP' else ALL_CONDITIONS
+)
+print(f'\\nMode = {H6_MODE} → {len(CONDITIONS)} conditions × {len(items)} questions')
 """)))
 
 cells.append(code(wrap("H6 — run all conditions (resumable)", """
 # Resumable: if `h6/<condition>.jsonl` exists, picks up from the next item.
-# Wall time on A100 with reasoning chains (~200 tokens / question):
-# 100 q × 6 conditions × ~3 s ≈ 30 min.
+# Wall time per condition × question depends on reasoning chain length;
+# expect 2-4 s/q on Blackwell. DEEP mode (1273 × 3) ≈ 2-3 hr,
+# FAST mode (100 × 6) ≈ 30 min.
 import time
 t0 = time.time()
 all_results = run_conditions(
@@ -820,11 +828,12 @@ print(f'\\nDone in {(time.time() - t0)/60:.1f} min')
 
 import json
 summary = json.loads((H6_RESULTS / 'summary.json').read_text())
-print(f'\\n{"condition":<20} {"acc":>7}  {"p_top1":>8}  {"p_gold":>8}  {"brier":>8}')
-print('-' * 60)
+print(f'\\n{"condition":<22} {"acc":>6}  {"p_top1@ans":>10}  {"p_gold@ans":>10}  {"brier@ans":>10}  {"ans_found":>10}')
+print('-' * 80)
 for c, s in summary.items():
-    print(f'{c:<20} {s["accuracy"]:>7.3f}  {s["mean_p_top1"]:>8.4f}  '
-          f'{s["mean_p_gold_letter"]:>8.4f}  {s["brier_score"]:>8.4f}')
+    print(f'{c:<22} {s["accuracy"]:>6.3f}  {s["mean_p_top1_at_answer"]:>10.4f}  '
+          f'{s["mean_p_gold_at_answer"]:>10.4f}  {s["brier_at_answer"]:>10.4f}  '
+          f'{s["answer_position_found_rate"]:>10.3f}')
 """)))
 
 cells.append(code(wrap("H6 — sample reasoning per condition", """
@@ -860,26 +869,153 @@ for c in conds:
     acc = sum(int(r[f'{c}_correct'] or 0) for r in rows) / max(1, len(rows))
     print(f'  {c:<20}: {acc:.3f}  ({acc - base_acc:+.3f})')
 
-# Calibration: did ablate_overconf bring p_top1 down to a level closer to correctness?
+# Calibration at the ANSWER token (not the first generated token).
 fig, axes = plt.subplots(1, 2, figsize=(13, 4))
 for c in CONDITIONS:
-    p = np.array([float(r[f'{c}_p_top1']) for r in rows if r[f'{c}_p_top1']])
-    correct = np.array([int(r[f'{c}_correct'] or 0) for r in rows if r[f'{c}_p_top1']])
+    p = np.array([float(r[f'{c}_p_top1_answer']) for r in rows if r[f'{c}_p_top1_answer']])
+    correct = np.array([int(r[f'{c}_correct'] or 0) for r in rows if r[f'{c}_p_top1_answer']])
+    if len(p) == 0:
+        continue
     axes[0].hist(p, bins=20, histtype='step', label=c, alpha=0.8, linewidth=1.5)
-    # Reliability: mean correctness per p-bin.
     bins = np.linspace(0, 1, 11)
     bin_idx = np.digitize(p, bins) - 1
     means = [correct[bin_idx == b].mean() if (bin_idx == b).any() else np.nan for b in range(10)]
     axes[1].plot((bins[:-1] + bins[1:]) / 2, means, marker='o', label=c, alpha=0.8)
-axes[0].set_xlabel('p_top1 (first-token confidence)'); axes[0].set_ylabel('# questions')
-axes[0].set_title('Confidence distribution per condition'); axes[0].legend(fontsize=8); axes[0].grid(alpha=0.3)
-axes[1].plot([0, 1], [0, 1], 'k--', lw=0.5, label='perfect')
-axes[1].set_xlabel('predicted p_top1'); axes[1].set_ylabel('empirical accuracy')
-axes[1].set_title('Reliability diagram'); axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3)
+axes[0].set_xlabel('p_top1 at the answer-letter position'); axes[0].set_ylabel('# questions')
+axes[0].set_title('Confidence at Answer:'); axes[0].legend(fontsize=8); axes[0].grid(alpha=0.3)
+axes[1].plot([0, 1], [0, 1], 'k--', lw=0.5, label='perfect calibration')
+axes[1].set_xlabel('predicted p_top1 @ answer'); axes[1].set_ylabel('empirical accuracy')
+axes[1].set_title('Reliability diagram (answer-position)'); axes[1].legend(fontsize=8); axes[1].grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H6_RESULTS / 'reliability.png', dpi=140); plt.show()
 """)))
 
-cells.append(md("## 9. Persist run metadata"))
+cells.append(md(
+    "## 9. Consensus-flip analysis\n\n"
+    "A *consensus-flip* case is a question where the baseline's **reasoning text** "
+    "mentions the gold letter (the model knows it in CoT) but the **committed letter** "
+    "is different. The H1 thesis predicts that ablating/anchoring the gate should "
+    "disproportionately fix these cases. We compare per-condition fix rates on the "
+    "consensus-flip subset vs the broader baseline-wrong set."
+))
+
+cells.append(code(wrap("consensus-flip analyzer", """
+from src.consensus import analyze, summarize
+
+conds = list(CONDITIONS.keys())
+rows = analyze(H6_RESULTS / 'comparison.csv', conds)
+report = summarize(rows, conds)
+
+print(f"Total questions          : {report['n_total']}")
+print(f"Baseline wrong           : {report['n_baseline_wrong']}")
+print(f"Consensus-flip cases     : {report['n_consensus_flips']}")
+print()
+print(f'{"condition":<22}  flips fixed  on-flips %   any baseline-wrong fixed  any-rate %')
+print('-' * 92)
+for c, info in report['fix_rates'].items():
+    print(f'{c:<22}  {info["on_flips"]:>11}  {100*info["on_flips_rate"]:>9.1f}%  '
+          f'{info["on_any_baseline_wrong"]:>23}  {100*info["on_any_rate"]:>8.1f}%')
+
+# Per-row dump for offline inspection.
+import json as _json
+(H6_RESULTS / 'consensus_flip.json').write_text(
+    _json.dumps({'report': report,
+                 'rows': [r.__dict__ for r in rows]}, indent=2))
+print('\\nWrote', H6_RESULTS / 'consensus_flip.json')
+""")))
+
+cells.append(md(
+    "## 10. H7 — Calibration-failure layers at MedQA scale\n\n"
+    "Repeat the H5 analysis (Pearson r between per-layer activation and "
+    "calibration miscalibration) but on **MedQA-scale activations**, "
+    "measured at the **answer-letter token position**. The miscalibration "
+    "signal here is `p_top1@answer − int(correct)`: positive = overconfident "
+    "wrong; near zero = well-calibrated. With N>500 the per-neuron r becomes "
+    "statistically meaningful even at small effect sizes (r ~ 0.1)."
+))
+
+cells.append(code(wrap("H7 — collect answer-position activations + rank miscalibration neurons", """
+from src.h7_layers import collect_answer_position_acts, rank_miscalibration_neurons
+
+H7_RESULTS = RESULTS / 'h7'; H7_RESULTS.mkdir(exist_ok=True)
+H7_N = min(300, len(items))   # adjust upward if you have budget
+print(f'H7 collecting acts on {H7_N} items (later-half layers).')
+
+h7_rows, h7_acts = collect_answer_position_acts(
+    lm, items[:H7_N],
+    layer_indices=list(range(lm.n_layers // 2, lm.n_layers)),
+)
+print(f'Collected {len(h7_rows)} valid rows across {len(h7_acts)} layers.')
+
+miscal_neurons = rank_miscalibration_neurons(h7_rows, h7_acts, top_k=20)
+print('\\nTop-20 miscalibration neurons (r = corr(activation, p_top1@answer − correct)):')
+print(f'  {"neuron":<14}  {"r":>7}  {"act_overconf":>13}  {"act_calib":>11}')
+for n in miscal_neurons:
+    print(f'  L{n.layer:>2}:F{n.neuron:<6}  {n.pearson_r:>+7.3f}  {n.mean_act_overconf:>+13.3f}  {n.mean_act_calib:>+11.3f}')
+
+(H7_RESULTS / 'miscal_neurons.json').write_text(json.dumps([n.__dict__ for n in miscal_neurons], indent=2))
+(H7_RESULTS / 'rows.json').write_text(json.dumps(h7_rows, indent=2))
+""")))
+
+cells.append(code(wrap("H7 — layer profile + comparison to H5", """
+import numpy as np, matplotlib.pyplot as plt
+
+# Mean and max r per layer.
+by_L = {}
+for n in miscal_neurons:
+    by_L.setdefault(n.layer, []).append(n.pearson_r)
+layers = sorted(by_L)
+mean_r = [np.mean(by_L[L]) for L in layers]
+max_r  = [np.max(by_L[L]) for L in layers]
+
+fig, ax = plt.subplots(figsize=(9, 4))
+ax.plot(layers, mean_r, marker='o', label='mean r (top-20)')
+ax.plot(layers, max_r, marker='s', label='max r')
+ax.axhline(0, color='k', lw=0.5)
+ax.set_xlabel('layer'); ax.set_ylabel('Pearson r')
+ax.set_title('H7: miscalibration signal by layer (MedQA scale)')
+ax.legend(); ax.grid(alpha=0.3)
+plt.tight_layout(); plt.savefig(H7_RESULTS / 'layer_profile.png', dpi=140); plt.show()
+
+# Overlap with H5's top neurons (which were ranked on 20 hard prose cases).
+h5_set = {(n.layer, n.neuron) for n in over_neurons}
+h7_set = {(n.layer, n.neuron) for n in miscal_neurons}
+overlap = h5_set & h7_set
+print(f'H5 top-15 ∩ H7 top-20 overlap: {len(overlap)} neurons  ({list(overlap)})')
+""")))
+
+cells.append(md(
+    "## 11. H4-extended — per-category hallucination commit rates\n\n"
+    "The trap DB is now ~50 prompts across categories: underspecified, "
+    "contradictory, rare, fabricated, impossible. Per-category commit rates "
+    "isolate *which kind* of hallucination dominates. The most diagnostic "
+    "are `fabricated` and `impossible` — any commitment is by construction "
+    "wrong."
+))
+
+cells.append(code(wrap("H4 — per-category commit rates from cached classifications", """
+import collections, json as _json
+
+# We have the trap classifications saved by H4 (cell 22).
+classif = _json.loads((H4_RESULTS / 'classifications.json').read_text())
+# `classifications['trap']` is a list of [prompt, committed, generation].
+from src.data import TRAP_DB
+cat_of = dict(TRAP_DB)   # prompt -> category
+
+counts = collections.defaultdict(lambda: [0, 0])
+for prompt, committed, gen in classif.get('trap', []):
+    cat = cat_of.get(prompt, 'unknown')
+    counts[cat][0] += int(bool(committed))
+    counts[cat][1] += 1
+
+print(f'{"category":<16}  {"commit_rate":>12}  {"n":>4}')
+print('-' * 38)
+for cat in ['underspecified', 'contradictory', 'rare', 'fabricated', 'impossible', 'unknown']:
+    c, n = counts.get(cat, [0, 0])
+    if n:
+        print(f'{cat:<16}  {c/n:>11.2f}  {n:>4}   ({c} committed)')
+""")))
+
+cells.append(md("## 12. Persist run metadata"))
 
 cells.append(code(wrap("write run.json", """
 import subprocess, datetime
@@ -906,9 +1042,14 @@ manifest = {
             'overconfident_rate': float(sum(1 for c in cases_dump if c['calibration_gap'] > 0.3) / max(1, len(cases_dump)))},
     'h6': {'summary': str(H6_RESULTS / 'summary.json'),
             'comparison_csv': str(H6_RESULTS / 'comparison.csv'),
+            'consensus_flip': str(H6_RESULTS / 'consensus_flip.json'),
             'dataset': DATASET,
+            'mode': H6_MODE,
             'n_questions': len(items),
             'conditions': list(CONDITIONS.keys())},
+    'h7': {'miscal_neurons': str(H7_RESULTS / 'miscal_neurons.json'),
+            'layer_profile': str(H7_RESULTS / 'layer_profile.png'),
+            'n_items_scanned': H7_N},
 }
 (RESULTS / 'run.json').write_text(json.dumps(manifest, indent=2))
 print(json.dumps(manifest, indent=2))

@@ -260,18 +260,67 @@ class BenchmarkRow:
     correct: bool
     reasoning: str          # parsed reasoning chain (before "Answer:")
     raw_output: str
-    p_top1: float           # max softmax probability at the first generated token
-    p_gold_letter: float    # probability of the gold-letter token (calibration on the answer)
+    # Calibration at the FIRST generated token (≈ "Reasoning") — not very
+    # informative under the reasoning prompt; kept for backward compat.
+    p_top1_first: float
+    p_gold_first: float
+    # Calibration at the token *immediately after* "Answer:" — i.e. the
+    # distribution that actually selected the answer letter. This is the
+    # meaningful confidence measurement under chain-of-thought.
+    p_top1_at_answer: float
+    p_gold_at_answer: float
+    answer_pos_found: bool   # whether we located "Answer:" in the chain
+
 
 
 def _letter_token_ids(tokenizer, letters: Sequence[str]) -> Dict[str, int]:
-    """First-token ID for " A", " B", ... (leading space matches assistant prefix)."""
+    """First-token ID for each letter under common surrounding contexts.
+
+    We probe both " A" (leading space, the usual continuation form) and "A"
+    (bare) and take the most common ID across them. The map returned is
+    ``{letter: id}`` for fast probability lookup.
+    """
     out: Dict[str, int] = {}
     for L in letters:
+        # Prefer the leading-space form (matches "Answer: A").
         ids = tokenizer(" " + L, add_special_tokens=False).input_ids
         if ids:
             out[L] = ids[0]
+        else:
+            ids = tokenizer(L, add_special_tokens=False).input_ids
+            if ids:
+                out[L] = ids[0]
     return out
+
+
+_ANSWER_END_RE = re.compile(r"answer\s*[:\-]\s*$", re.IGNORECASE | re.DOTALL)
+
+
+def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: int = 400) -> Optional[int]:
+    """Locate the position (in ``generated_ids``) whose logit distribution
+    *chose the answer letter* — i.e. the token immediately after "Answer:".
+
+    Decoding token-by-token and matching the accumulated text against
+    ``answer\\s*[:\\-]\\s*$`` handles every tokenizer quirk: whether
+    "Answer:" is one token or three, whether there is a leading space, etc.
+
+    Returns the index ``i`` into ``generated_ids`` such that
+    ``gen.scores[i]`` is the logit distribution that produced the answer
+    letter, and ``generated_ids[i]`` is the letter token itself. Returns
+    ``None`` if "Answer:" never appears in the generation.
+    """
+    text = ""
+    upper = min(int(generated_ids.shape[0]), max_search)
+    for i in range(upper):
+        text += tokenizer.decode([int(generated_ids[i])], skip_special_tokens=True)
+        if _ANSWER_END_RE.search(text):
+            # The next token (i+1) was emitted *by* the logit at position i+1,
+            # which we have in gen.scores[i+1]. But the letter token itself is
+            # generated_ids[i+1]; bounds-check first.
+            if i + 1 < int(generated_ids.shape[0]):
+                return i + 1
+            return None
+    return None
 
 
 @torch.no_grad()
@@ -302,16 +351,29 @@ def run_one(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # ---- Calibration at first token (legacy, ≈ "Reasoning") ----
     first_probs = F.softmax(gen.scores[0][0].float(), dim=-1)
-    p_top1 = float(first_probs.max())
+    p_top1_first = float(first_probs.max())
 
     letter_ids = _letter_token_ids(tok, list(item.options.keys()))
     gold_id = letter_ids.get(item.gold)
-    p_gold = float(first_probs[gold_id]) if gold_id is not None else 0.0
+    p_gold_first = float(first_probs[gold_id]) if gold_id is not None else 0.0
 
-    raw = tok.decode(
-        gen.sequences[0, enc.input_ids.shape[1]:], skip_special_tokens=True
-    )
+    # ---- Calibration AT the answer letter (the meaningful signal) ----
+    generated_ids = gen.sequences[0, enc.input_ids.shape[1]:]
+    ans_pos = _find_answer_token_pos(tok, generated_ids)
+    if ans_pos is not None and ans_pos < len(gen.scores):
+        ans_probs = F.softmax(gen.scores[ans_pos][0].float(), dim=-1)
+        p_top1_at_answer = float(ans_probs.max())
+        p_gold_at_answer = float(ans_probs[gold_id]) if gold_id is not None else 0.0
+        answer_pos_found = True
+    else:
+        # Fall back to first-token if the model didn't honor the format.
+        p_top1_at_answer = p_top1_first
+        p_gold_at_answer = p_gold_first
+        answer_pos_found = False
+
+    raw = tok.decode(generated_ids, skip_special_tokens=True)
     predicted = parse_letter(raw, list(item.options.keys()))
     reasoning = parse_reasoning(raw)
     correct = (predicted is not None and predicted == item.gold)
@@ -321,7 +383,9 @@ def run_one(
         question=item.question, options=item.options, gold=item.gold,
         predicted=predicted, correct=correct,
         reasoning=reasoning, raw_output=raw,
-        p_top1=p_top1, p_gold_letter=p_gold,
+        p_top1_first=p_top1_first, p_gold_first=p_gold_first,
+        p_top1_at_answer=p_top1_at_answer, p_gold_at_answer=p_gold_at_answer,
+        answer_pos_found=answer_pos_found,
     )
 
 
@@ -436,8 +500,12 @@ def _write_comparison_csv(items, all_results, path: Path) -> None:
         w = csv.writer(f)
         header = ["q_id", "question", "gold"]
         for c in conds:
-            header += [f"{c}_pred", f"{c}_correct", f"{c}_p_top1",
-                       f"{c}_p_gold", f"{c}_reasoning"]
+            header += [
+                f"{c}_pred", f"{c}_correct",
+                f"{c}_p_top1_first",  f"{c}_p_gold_first",
+                f"{c}_p_top1_answer", f"{c}_p_gold_answer",
+                f"{c}_answer_found",  f"{c}_reasoning",
+            ]
         w.writerow(header)
         for item in items:
             row_records = by_id.get(item.q_id, {})
@@ -447,11 +515,12 @@ def _write_comparison_csv(items, all_results, path: Path) -> None:
                 if r:
                     row += [
                         r.predicted or "", int(r.correct),
-                        f"{r.p_top1:.4f}", f"{r.p_gold_letter:.4f}",
-                        r.reasoning,
+                        f"{r.p_top1_first:.4f}", f"{r.p_gold_first:.4f}",
+                        f"{r.p_top1_at_answer:.4f}", f"{r.p_gold_at_answer:.4f}",
+                        int(r.answer_pos_found), r.reasoning,
                     ]
                 else:
-                    row += ["", "", "", "", ""]
+                    row += ["", "", "", "", "", "", "", ""]
             w.writerow(row)
 
 
@@ -460,15 +529,24 @@ def _write_summary(all_results, path: Path) -> None:
     for cond, rows in all_results.items():
         n = len(rows)
         acc = sum(int(r.correct) for r in rows) / max(1, n)
-        mean_p_top1 = sum(r.p_top1 for r in rows) / max(1, n)
-        mean_p_gold = sum(r.p_gold_letter for r in rows) / max(1, n)
-        # Calibration brier-style: distance between p_top1 and correctness.
-        brier = sum((r.p_top1 - int(r.correct)) ** 2 for r in rows) / max(1, n)
+        # Legacy first-token metrics (kept for backward compat).
+        mean_p_first = sum(r.p_top1_first for r in rows) / max(1, n)
+        # Answer-position metrics — the actual confidence on the answer letter.
+        mean_p_top1_ans = sum(r.p_top1_at_answer for r in rows) / max(1, n)
+        mean_p_gold_ans = sum(r.p_gold_at_answer for r in rows) / max(1, n)
+        # Brier at the answer position (lower = better-calibrated).
+        brier_at_answer = sum(
+            (r.p_top1_at_answer - int(r.correct)) ** 2 for r in rows
+        ) / max(1, n)
+        # Fraction of rows where we found "Answer:" — a sanity check on format adherence.
+        answer_found_rate = sum(int(r.answer_pos_found) for r in rows) / max(1, n)
         summary[cond] = {
             "n": n,
             "accuracy": acc,
-            "mean_p_top1": mean_p_top1,
-            "mean_p_gold_letter": mean_p_gold,
-            "brier_score": brier,
+            "mean_p_top1_first": mean_p_first,
+            "mean_p_top1_at_answer": mean_p_top1_ans,
+            "mean_p_gold_at_answer": mean_p_gold_ans,
+            "brier_at_answer": brier_at_answer,
+            "answer_position_found_rate": answer_found_rate,
         }
     path.write_text(json.dumps(summary, indent=2))

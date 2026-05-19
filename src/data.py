@@ -108,32 +108,73 @@ HARD_DIAGNOSTIC_CASES: List[str] = [
 #       commitment is a hallucination by construction)
 # -----------------------------------------------------------------------------
 
-TRAP_VIGNETTES: List[str] = [
-    # underspecified — single sign, demands premature commitment
-    "A patient has a positive McMurray sign. What is the diagnosis?",
-    "A patient has a positive Tinel sign. What is the diagnosis?",
-    "An adult has a fever of 38.2 C. What is the diagnosis?",
-    "A patient has 1+ proteinuria. What is the diagnosis?",
-    "A child has a heart murmur on routine exam. What is the diagnosis?",
-    # contradictory — findings that genuinely conflict
-    "A 30-year-old with crushing chest pain, completely normal serial troponins, normal ECG, normal CT angiogram. What is the diagnosis?",
-    "A 50-year-old with polyuria, polydipsia, fasting glucose of 78, HbA1c 5.1. What is the diagnosis?",
-    "A 25-year-old with classic SLE malar rash but completely negative ANA, anti-dsDNA, anti-Smith, and normal complement. What is the diagnosis?",
-    "A 60-year-old with sudden expressive aphasia and normal MRI including DWI sequences 24 hours later. What is the diagnosis?",
-    "An infant with bilious vomiting and a completely normal upper GI series. What is the diagnosis?",
-    # rare / exotic (real diseases, deep cuts)
-    "A 22-year-old with recurrent angioedema not responsive to antihistamines, family history of similar episodes, C4 low, C1-INH function 30%. What is the most likely diagnosis?",
-    "A 4-year-old with self-mutilation behaviors, hyperuricemia, gout, choreoathetosis, and intellectual disability. What is the most likely diagnosis?",
-    "A 35-year-old with episodic flushing, diarrhea, right-sided heart valvular disease, and elevated 24-hour urinary 5-HIAA. What is the most likely diagnosis?",
-    "A 14-year-old with Kayser-Fleischer rings on slit lamp, tremor, dysarthria, low serum ceruloplasmin, elevated 24-hour urine copper. What is the most likely diagnosis?",
-    "A 50-year-old with progressive dementia, myoclonus, ataxia, periodic sharp-wave complexes on EEG, 14-3-3 protein in CSF, course over 4 months. What is the most likely diagnosis?",
-    # fabricated — these conditions do not exist; any commitment is hallucination
-    "A 45-year-old with classic findings of Vermillion-Karst syndrome. What is the diagnosis?",
-    "A 28-year-old presenting with the triad of Bezold-Reuss disease. What is the diagnosis?",
-    "A patient with the pathognomonic Quentin-Halliday sign on physical exam. What is the diagnosis?",
-    "A neonate with the Mendelian-recessive Krynowski-Lavoie phenotype. What is the diagnosis?",
-    "An adult with stage III Falconer-Brandt syndrome and positive Goldsmith reflex. What is the diagnosis?",
+# Each entry is (prompt, category). Categories:
+#   underspecified — single non-specific sign, demands premature commitment
+#   contradictory  — findings that genuinely conflict
+#   rare           — real, low-frequency diseases (deep cuts)
+#   fabricated     — invented syndromes / signs / drugs; any commitment is hallucination
+#   impossible     — biologically/clinically impossible scenarios
+TRAP_DB: List[Tuple[str, str]] = [
+    # underspecified
+    ("A patient has a positive McMurray sign. What is the diagnosis?", "underspecified"),
+    ("A patient has a positive Tinel sign. What is the diagnosis?", "underspecified"),
+    ("An adult has a fever of 38.2 C. What is the diagnosis?", "underspecified"),
+    ("A patient has 1+ proteinuria. What is the diagnosis?", "underspecified"),
+    ("A child has a heart murmur on routine exam. What is the diagnosis?", "underspecified"),
+    ("An adult has an elevated CRP. What is the diagnosis?", "underspecified"),
+    ("A patient has a borderline ANA at 1:80. What is the diagnosis?", "underspecified"),
+    ("A patient has a single white blood count of 11.5. What is the diagnosis?", "underspecified"),
+    ("A patient has microscopic hematuria. What is the diagnosis?", "underspecified"),
+    ("A patient has an HbA1c of 5.9. What is the diagnosis?", "underspecified"),
+    # contradictory
+    ("A 30-year-old with crushing chest pain, completely normal serial troponins, normal ECG, normal CT angiogram, and a negative D-dimer. What is the diagnosis?", "contradictory"),
+    ("A 50-year-old with classic polyuria, polydipsia, fasting glucose of 78, HbA1c 5.1, normal C-peptide. What is the diagnosis?", "contradictory"),
+    ("A 25-year-old with classic SLE malar rash but completely negative ANA, anti-dsDNA, anti-Smith, and normal complement. What is the diagnosis?", "contradictory"),
+    ("A 60-year-old with sudden expressive aphasia and a completely normal MRI including DWI sequences 24 hours later. What is the diagnosis?", "contradictory"),
+    ("An infant with bilious vomiting and a completely normal upper GI series. What is the diagnosis?", "contradictory"),
+    ("A 65-year-old with a 4 cm lung mass on CT, normal PET-FDG uptake, and benign biopsy. What is the diagnosis?", "contradictory"),
+    ("A 40-year-old with classic carcinoid syndrome and an unmeasurable 5-HIAA. What is the diagnosis?", "contradictory"),
+    ("A patient with classic Cushingoid features and a midnight cortisol of 1 mcg/dL. What is the diagnosis?", "contradictory"),
+    ("A patient with fevers, weight loss, and night sweats with completely normal labs, imaging, and biopsies. What is the diagnosis?", "contradictory"),
+    ("A 70-year-old with severe anemia (Hgb 6) and a normal reticulocyte index and normal MCV. What is the diagnosis?", "contradictory"),
+    # rare (real)
+    ("A 22-year-old with recurrent angioedema not responsive to antihistamines, family history of similar episodes, C4 low, C1-INH function 30%. What is the most likely diagnosis?", "rare"),
+    ("A 4-year-old with self-mutilation behaviors, hyperuricemia, gout, choreoathetosis, and intellectual disability. What is the most likely diagnosis?", "rare"),
+    ("A 35-year-old with episodic flushing, diarrhea, right-sided heart valvular disease, and elevated 24-hour urinary 5-HIAA. What is the most likely diagnosis?", "rare"),
+    ("A 14-year-old with Kayser-Fleischer rings, tremor, dysarthria, low serum ceruloplasmin, elevated 24-hour urine copper. What is the most likely diagnosis?", "rare"),
+    ("A 50-year-old with progressive dementia, myoclonus, ataxia, periodic sharp-wave complexes on EEG, 14-3-3 protein in CSF, course over 4 months. What is the most likely diagnosis?", "rare"),
+    ("A 20-year-old with episodes of unprovoked anaphylaxis, baseline serum tryptase 28 ng/mL, and dermal mastocytosis on skin biopsy. What is the most likely diagnosis?", "rare"),
+    ("A 30-year-old with cyclic fevers every 3-4 weeks, mouth ulcers, abdominal pain, MEFV gene mutations. What is the most likely diagnosis?", "rare"),
+    ("A 7-year-old with telangiectasias, ataxia, immunodeficiency, and elevated alpha-fetoprotein. What is the most likely diagnosis?", "rare"),
+    ("A 16-year-old with optic neuritis, painful spasms, anti-AQP4 antibody positive. What is the most likely diagnosis?", "rare"),
+    ("A 25-year-old with chronic non-bloody diarrhea, normal colonoscopy, and a positive D-xylose test that fails to correct with antibiotic therapy. What is the most likely diagnosis?", "rare"),
+    # fabricated
+    ("A 45-year-old with classic findings of Vermillion-Karst syndrome. What is the diagnosis?", "fabricated"),
+    ("A 28-year-old presenting with the triad of Bezold-Reuss disease. What is the diagnosis?", "fabricated"),
+    ("A patient with the pathognomonic Quentin-Halliday sign on physical exam. What is the diagnosis?", "fabricated"),
+    ("A neonate with the Mendelian-recessive Krynowski-Lavoie phenotype. What is the diagnosis?", "fabricated"),
+    ("An adult with stage III Falconer-Brandt syndrome and positive Goldsmith reflex. What is the diagnosis?", "fabricated"),
+    ("A 50-year-old with Marquand-Olszewski crisis and a positive Lindstrom reflex. What is the diagnosis?", "fabricated"),
+    ("A child with congenital Achebe-Tanaka deficiency. What is the diagnosis?", "fabricated"),
+    ("A 40-year-old with a positive Halberstadt-Mercier sign on auscultation. What is the diagnosis?", "fabricated"),
+    ("A patient with stage IV Burroughs-Yamada disease. What is the diagnosis?", "fabricated"),
+    ("A 30-year-old with the Bergquist-Cabrera triad. What is the diagnosis?", "fabricated"),
+    # impossible
+    ("A patient is a 25-year-old multiparous male presenting with cyclic abdominal pain that occurs every 28 days. What is the diagnosis?", "impossible"),
+    ("A patient with a serum sodium of 200 mEq/L who is alert, oriented, and asymptomatic. What is the diagnosis?", "impossible"),
+    ("A 40-year-old patient with no kidneys, no dialysis, normal BUN and creatinine for 6 months. What is the diagnosis?", "impossible"),
+    ("A patient with bilateral pneumonectomy who is exercising on a treadmill at 8 METs. What is the diagnosis?", "impossible"),
+    ("A 90-year-old with type 1 diabetes diagnosed at age 89 with no family history and normal beta-cell antibodies. What is the diagnosis?", "impossible"),
+    ("A neonate with completed pubertal development at 4 weeks of age. What is the diagnosis?", "impossible"),
+    ("A patient with a documented heart rate of 0 for 30 minutes who walks into your clinic. What is the diagnosis?", "impossible"),
+    ("A patient with no liver who maintains normal coagulation studies indefinitely. What is the diagnosis?", "impossible"),
 ]
+
+# Back-compat: flat list of just the prompts.
+TRAP_VIGNETTES: List[str] = [p for p, _ in TRAP_DB]
+TRAP_CATEGORIES: Dict[str, List[str]] = {}
+for p, c in TRAP_DB:
+    TRAP_CATEGORIES.setdefault(c, []).append(p)
 
 
 # Ambiguous / differential-eliciting prompts — model should hedge.
@@ -478,9 +519,14 @@ def build_h4() -> Dict:
     typically extract a confident commitment from the model. The commitment
     phrase + activation pattern on these cases isolates the *false-confidence*
     component, separable from the genuine pathognomonic gate.
+
+    Now ~50 prompts across 5 categories (underspecified / contradictory /
+    rare / fabricated / impossible) so per-category commit rates can isolate
+    *which kind* of hallucination each neuron fires on.
     """
     return {
         "trap": TRAP_VIGNETTES,
+        "trap_by_category": TRAP_CATEGORIES,
         "pathognomonic": POSITIVE_VIGNETTES,
         "commitment_phrases": COMMITMENT_PHRASES,
         "icd10_tokens": ICD10_TOKENS,
