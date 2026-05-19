@@ -42,7 +42,10 @@ import torch
 import torch.nn.functional as F
 from tqdm.auto import tqdm
 
-from .hooks import anchor_intervention, constant_intervention, zero_mlp_intervention
+from .hooks import (
+    additive_intervention, anchor_intervention, constant_intervention,
+    zero_mlp_intervention,
+)
 from .model import LoadedModel, clear_h
 
 
@@ -432,6 +435,24 @@ def zero_mlp_factory(layers, layer_indices: Sequence[int]):
     """Factory: zero the MLP output at the given layer(s) — H3 critical-layer ablation."""
     def _build():
         return zero_mlp_intervention(layers, list(layer_indices))
+    return _build
+
+
+def additive_shift_factory(layers, shifts: Sequence[Dict[str, Any]]):
+    """Factory that applies an additive offset to each (layer, neuron) pair.
+
+    ``shifts`` is a list of ``{layer, neuron, amount}`` records. Used for the
+    H7 "anchor toward calibrated profile" intervention where the offset is
+    ``mean_calib − mean_overconf`` — a soft shift that preserves per-token
+    context, unlike ``constant_intervention(value=0)`` which fully overwrites.
+    """
+    factories = [
+        (lambda L=s["layer"], N=s["neuron"], A=float(s["amount"]):
+            additive_intervention(layers, N, A, L))
+        for s in shifts
+    ]
+    def _build():
+        return compose(*factories)
     return _build
 
 

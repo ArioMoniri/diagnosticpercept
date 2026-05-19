@@ -986,6 +986,140 @@ print(f'H5 top-15 ∩ H7 top-20 overlap: {len(overlap)} neurons  ({list(overlap)
 """)))
 
 cells.append(md(
+    "## 10b. H6 pass-2 — H7-informed causal tests\n\n"
+    "Now that H7 has identified the MCQ-specific miscalibration neurons, add "
+    "two more conditions to H6 and re-run *only the new ones* (the harness "
+    "is resumable — baseline/h1/h5 are picked up from disk).\n\n"
+    "  - **h7_ablate_miscal** — zero out the top-3 H7 neurons. "
+    "Prediction: lower Brier@answer than H5.\n"
+    "  - **h7_anchor_calibrated** — softly shift each top neuron's "
+    "activation by `(mean_calib − mean_overconf)`, preserving per-token "
+    "context. Prediction: better Brier without losing accuracy."
+))
+
+cells.append(code(wrap("H6 pass-2 — add H7 conditions and run incrementally", """
+from src.healthbench import additive_shift_factory
+
+top_h7 = [{'layer': n.layer, 'neuron': n.neuron} for n in miscal_neurons[:3]]
+top_h7_shifts = [
+    {'layer': n.layer, 'neuron': n.neuron,
+     'amount': float(n.mean_act_calib - n.mean_act_overconf)}
+    for n in miscal_neurons[:3]
+]
+print('H7 top-3 to ablate :', top_h7)
+print('H7 top-3 shifts    :', [(s['layer'], s['neuron'], round(s['amount'], 3)) for s in top_h7_shifts])
+
+# Extend the conditions; baseline/h1/h5 jsonl on disk are reused (resume).
+CONDITIONS_P2 = {
+    **CONDITIONS,
+    'h7_ablate_miscal':     ablate_neurons_factory(lm.layers, top_h7),
+    'h7_anchor_calibrated': additive_shift_factory(lm.layers, top_h7_shifts),
+}
+
+import time
+t0 = time.time()
+all_results = run_conditions(
+    lm, items, CONDITIONS_P2, out_dir=H6_RESULTS, save_every=25,
+)
+print(f'\\nDone in {(time.time() - t0)/60:.1f} min')
+
+summary = json.loads((H6_RESULTS / 'summary.json').read_text())
+print(f'\\n{"condition":<24} {"acc":>6}  {"p_top1@ans":>10}  {"p_gold@ans":>10}  {"brier@ans":>10}  {"ans_found":>10}')
+print('-' * 88)
+for c, s in summary.items():
+    print(f'{c:<24} {s["accuracy"]:>6.3f}  {s["mean_p_top1_at_answer"]:>10.4f}  '
+          f'{s["mean_p_gold_at_answer"]:>10.4f}  {s["brier_at_answer"]:>10.4f}  '
+          f'{s["answer_position_found_rate"]:>10.3f}')
+
+# Compare H5 vs H7 Brier deltas explicitly.
+base = summary['baseline']
+print('\\nBrier delta vs baseline (negative = better calibration):')
+for c in ['h5_ablate_overconf', 'h7_ablate_miscal', 'h7_anchor_calibrated']:
+    if c in summary:
+        delta = summary[c]['brier_at_answer'] - base['brier_at_answer']
+        d_acc = summary[c]['accuracy'] - base['accuracy']
+        print(f'  {c:<24}  ΔBrier={delta:+.4f}   Δacc={d_acc:+.3f}')
+""")))
+
+cells.append(md(
+    "## 10c. H8 — Cross-task confidence circuits\n\n"
+    "H5 (prose) and H7 (MCQ) had zero neuron overlap. To find out *whether* "
+    "this is a real task split or a sampling artifact, measure both signals "
+    "on the **same questions**. For each MedQA item we run the MCQ forward "
+    "and capture per-layer activations at the answer-letter position, then "
+    "feed the model's answer back as prose (\"The answer is X. Are you "
+    "confident?\") and capture activations at the yes/no position. The "
+    "scatter of (r_mcq, r_prose) classifies each neuron as TASK-GENERAL, "
+    "MCQ-ONLY, or PROSE-ONLY confidence circuitry."
+))
+
+cells.append(code(wrap("H8 — collect MCQ + prose activations on the same questions", """
+from src.h8_xtask import collect_xtask, classify_neurons, category_summary
+
+H8_RESULTS = RESULTS / 'h8'; H8_RESULTS.mkdir(exist_ok=True)
+H8_N = min(200, len(items))
+print(f'H8 cross-task collection on {H8_N} items.')
+
+xt_rows, acts_mcq, acts_prose = collect_xtask(
+    lm, items[:H8_N],
+    layer_indices=list(range(lm.n_layers // 2, lm.n_layers)),
+)
+print(f'Collected {len(xt_rows)} paired rows.')
+
+xtask_neurons = classify_neurons(xt_rows, acts_mcq, acts_prose, r_threshold=0.15)
+summary_by_layer = category_summary(xtask_neurons)
+
+# Print per-layer category counts.
+print(f'\\n{"layer":<6} {"general":>8} {"mcq_only":>9} {"prose_only":>11} {"neither":>8}')
+print('-' * 50)
+for L in sorted(summary_by_layer):
+    s = summary_by_layer[L]
+    print(f'L{L:<5} {s["general"]:>8} {s["mcq_only"]:>9} {s["prose_only"]:>11} {s["neither"]:>8}')
+
+# Save full classification.
+import json as _json
+(H8_RESULTS / 'rows.json').write_text(_json.dumps([r.__dict__ for r in xt_rows], indent=2))
+(H8_RESULTS / 'neurons.json').write_text(_json.dumps([n.__dict__ for n in xtask_neurons], indent=2))
+""")))
+
+cells.append(code(wrap("H8 — scatter of r_mcq vs r_prose + layer profile", """
+import numpy as np, matplotlib.pyplot as plt
+fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+
+r_mcq_all = np.array([n.r_mcq for n in xtask_neurons])
+r_prose_all = np.array([n.r_prose for n in xtask_neurons])
+cats = np.array([n.category for n in xtask_neurons])
+colors = {'general': 'tab:red', 'mcq_only': 'tab:blue',
+          'prose_only': 'tab:green', 'neither': 'lightgrey'}
+for cat, col in colors.items():
+    mask = cats == cat
+    axes[0].scatter(r_mcq_all[mask], r_prose_all[mask], s=4, alpha=0.5,
+                    c=col, label=f'{cat} (n={mask.sum()})')
+axes[0].axhline(0.15, color='k', lw=0.3); axes[0].axvline(0.15, color='k', lw=0.3)
+axes[0].axhline(0, color='k', lw=0.3); axes[0].axvline(0, color='k', lw=0.3)
+axes[0].set_xlabel('r (activation, miscal_mcq)')
+axes[0].set_ylabel('r (activation, miscal_prose)')
+axes[0].set_title('H8 — neuron classification by task'); axes[0].legend(fontsize=8); axes[0].grid(alpha=0.3)
+
+# Per-layer counts of each category.
+layers = sorted(summary_by_layer)
+for cat in ['general', 'mcq_only', 'prose_only']:
+    counts = [summary_by_layer[L].get(cat, 0) for L in layers]
+    axes[1].plot(layers, counts, marker='o', label=cat, color=colors[cat])
+axes[1].set_xlabel('layer'); axes[1].set_ylabel('# neurons (r ≥ 0.15)')
+axes[1].set_title('Confidence circuitry by layer'); axes[1].legend(); axes[1].grid(alpha=0.3)
+plt.tight_layout(); plt.savefig(H8_RESULTS / 'xtask.png', dpi=140); plt.show()
+
+# Top-10 task-general neurons (best evidence of a *unified* "I'm sure" circuit).
+gen = [n for n in xtask_neurons if n.category == 'general']
+gen.sort(key=lambda n: (n.r_mcq + n.r_prose) / 2, reverse=True)
+print('\\nTop-10 TASK-GENERAL confidence neurons (high r in both tasks):')
+print(f'  {"neuron":<14}  {"r_mcq":>7}  {"r_prose":>8}')
+for n in gen[:10]:
+    print(f'  L{n.layer:>2}:F{n.neuron:<6}  {n.r_mcq:>+7.3f}  {n.r_prose:>+8.3f}')
+""")))
+
+cells.append(md(
     "## 11. H4-extended — per-category hallucination commit rates\n\n"
     "The trap DB is now ~50 prompts across categories: underspecified, "
     "contradictory, rare, fabricated, impossible. Per-category commit rates "
@@ -1015,6 +1149,54 @@ for cat in ['underspecified', 'contradictory', 'rare', 'fabricated', 'impossible
     c, n = counts.get(cat, [0, 0])
     if n:
         print(f'{cat:<16}  {c/n:>11.2f}  {n:>4}   ({c} committed)')
+""")))
+
+cells.append(md(
+    "## 11b. MedMCQA replication — does the consensus-flip enrichment hold?\n\n"
+    "We saw a clean H1 enrichment on MedQA (51.9% fix rate on the 27 flip "
+    "cases vs 2.9% random). Replicate on **MedMCQA validation** (a "
+    "different benchmark with different question style — pharmacology, "
+    "physiology, anatomy heavy) to check robustness. ~500 questions, all "
+    "5 conditions, ~70 min on Blackwell."
+))
+
+cells.append(code(wrap("MedMCQA — load + run + consensus-flip", """
+MEDMCQA_DATASET = 'openlifescienceai/medmcqa'
+MEDMCQA_RESULTS = RESULTS / 'h6_medmcqa'; MEDMCQA_RESULTS.mkdir(exist_ok=True)
+N_MEDMCQA = 500
+
+print(f'Loading {MEDMCQA_DATASET} (validation, n={N_MEDMCQA}) ...')
+try:
+    medmcqa_items = load_medqa(MEDMCQA_DATASET, split='validation',
+                                n=N_MEDMCQA, seed=0)
+    print(f'Loaded {len(medmcqa_items)} items.')
+except Exception as e:
+    print(f'MedMCQA load failed: {e}')
+    medmcqa_items = []
+
+if medmcqa_items:
+    all_results_medmcqa = run_conditions(
+        lm, medmcqa_items, CONDITIONS_P2, out_dir=MEDMCQA_RESULTS,
+        save_every=25,
+    )
+    s_medmcqa = json.loads((MEDMCQA_RESULTS / 'summary.json').read_text())
+    print(f'\\n{"condition":<24} {"acc":>6}  {"brier@ans":>10}')
+    print('-' * 44)
+    for c, s in s_medmcqa.items():
+        print(f'{c:<24} {s["accuracy"]:>6.3f}  {s["brier_at_answer"]:>10.4f}')
+
+    # Consensus-flip replication.
+    from src.consensus import analyze, summarize
+    conds = list(CONDITIONS_P2.keys())
+    rep_rows = analyze(MEDMCQA_RESULTS / 'comparison.csv', conds)
+    rep = summarize(rep_rows, conds)
+    print(f'\\nMedMCQA consensus-flips: {rep["n_consensus_flips"]} / {rep["n_total"]}')
+    print(f'{"condition":<24}  {"flips_fixed":>11}  {"on_flips_%":>11}  {"any_%":>7}')
+    for c, info in rep['fix_rates'].items():
+        print(f'  {c:<22}  {info["on_flips"]:>11}  {100*info["on_flips_rate"]:>10.1f}%  '
+              f'{100*info["on_any_rate"]:>6.1f}%')
+    (MEDMCQA_RESULTS / 'consensus_flip.json').write_text(json.dumps(
+        {'report': rep, 'rows': [r.__dict__ for r in rep_rows]}, indent=2))
 """)))
 
 cells.append(md("## 12. Persist run metadata"))
@@ -1052,6 +1234,16 @@ manifest = {
     'h7': {'miscal_neurons': str(H7_RESULTS / 'miscal_neurons.json'),
             'layer_profile': str(H7_RESULTS / 'layer_profile.png'),
             'n_items_scanned': H7_N},
+    'h8': {'rows': str(H8_RESULTS / 'rows.json'),
+            'neurons': str(H8_RESULTS / 'neurons.json'),
+            'scatter': str(H8_RESULTS / 'xtask.png'),
+            'n_items_scanned': H8_N},
+    'medmcqa': ({
+        'summary': str(MEDMCQA_RESULTS / 'summary.json'),
+        'comparison_csv': str(MEDMCQA_RESULTS / 'comparison.csv'),
+        'consensus_flip': str(MEDMCQA_RESULTS / 'consensus_flip.json'),
+        'n_questions': len(medmcqa_items),
+    } if medmcqa_items else {}),
 }
 (RESULTS / 'run.json').write_text(json.dumps(manifest, indent=2))
 print(json.dumps(manifest, indent=2))
