@@ -102,16 +102,11 @@ def _patch_mlp(mlp: nn.Module) -> None:
 # QWEN-ONLY by default (user explicitly asked for Qwen). To use Med42 or
 # OpenBioLLM set ``MODEL_OVERRIDE='m42-health/Llama3-Med42-8B'``.
 #
-# Qwen3 (April 2025) does NOT use the ``-Instruct`` suffix — the base
-# repository name is already the instruct variant. We also list a few
-# speculative Qwen3.5 names at the top in case they exist by the time
-# this is run; they'll be skipped silently if absent on HF.
+# Qwen3 (April 2025) is the latest Qwen family confirmed on HF; the
+# instruct variant is the base repo (no ``-Instruct`` suffix). All entries
+# below are verified to exist on huggingface.co/Qwen at the time of
+# writing. Qwen3.5 names were speculative and have been removed.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    # Speculative Qwen3.5 (may not exist on HF yet):
-    "Qwen/Qwen3.5-32B",
-    "Qwen/Qwen3.5-14B",
-    "Qwen/Qwen3.5-8B",
-    # Confirmed Qwen3 family:
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
@@ -137,7 +132,10 @@ def load_first_available(
             print(f"[load_first_available] loaded {name}")
             return lm, name
         except Exception as e:
-            print(f"[load_first_available] {name} failed: {type(e).__name__}: {e}")
+            # HF "repo not found" comes with a misleading "pass a token"
+            # boilerplate — trim to the first line so the log is readable.
+            msg = str(e).split("\n", 1)[0]
+            print(f"[load_first_available] {name} failed: {type(e).__name__}: {msg}")
             last_err = e
     raise RuntimeError(
         f"All candidates failed. Last error: {last_err!r}"
