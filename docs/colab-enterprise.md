@@ -48,6 +48,20 @@ too tight). The notebook auto-detects GPU memory and:
 
 so you don't have to set `MODEL_OVERRIDE` manually.
 
+### A1a. Verify the idle-shutdown slider before saving
+
+Vertex AI Colab Enterprise has *two* idle settings — both must be set:
+
+| setting | where | recommended |
+|---|---|---|
+| **Runtime idle shutdown** | Runtime template → "Auto-shutdown" or "Idle shutdown" slider | **4 h** (or longer) |
+| **Notebook idle shutdown** | Runtime template → "Notebook idle timeout" (if shown) | **4 h** |
+
+The defaults are often **10 minutes** — far too short for the full sweep
+and for the install + kernel-restart cycle. If you see your VM
+power off after a few minutes (`audit: op=disconnect` → `reboot:
+Power down` in the runtime logs), bump these sliders up.
+
 ### A1b. Check quota first
 
 Console search → **Quotas** → filter by:
