@@ -107,18 +107,19 @@ def _patch_mlp(mlp: nn.Module) -> None:
 # pattern; non-existent repos just print "not on HF, skipping" and we
 # proceed to the next.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    # Qwen3.5 (May 2026, verified on huggingface.co/Qwen): natively
-    # multimodal foundation, 3:1 Gated DeltaNet / Gated Attention hybrid,
-    # thinking mode on by default. Bare name = instruct variant.
-    # 27B is the largest dense variant that fits a single A100 at NF4.
-    "Qwen/Qwen3.5-27B",
-    "Qwen/Qwen3.5-9B",
-    "Qwen/Qwen3.5-4B",
-    # Qwen3 (April 2025) deeper fallbacks if a Qwen3.5 size can't fit:
+    # Qwen3 (April 2025) — confirmed loadable on standard transformers.
+    # Default chain.
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
     "Qwen/Qwen3-4B",
+    # Qwen3.5 (May 2026) — natively multimodal, hybrid Gated DeltaNet /
+    # Gated Attention. Architecture not yet in transformers main as of
+    # writing; loading currently raises "does not recognize this
+    # architecture". Listed here as deeper fallbacks for future builds.
+    "Qwen/Qwen3.5-27B",
+    "Qwen/Qwen3.5-9B",
+    "Qwen/Qwen3.5-4B",
 )
 QWEN_PREFIX = "Qwen/"
 

@@ -149,22 +149,27 @@ if torch.cuda.is_available():
     print(f'GPU: {{gpu_name}}  | Memory: {{gpu_gb:.1f}} GB')
 
     # ---------- Auto-pick model based on GPU class ----------
-    # Backwards-pass memory budget: weights * (1 + 1.5 grad-overhead) + KV +
-    # activations. NF4 weights are ~50% of bf16. Empirical headroom:
-    #   - 80 GB+  → Qwen3.5-27B in bf16 (best capability, no quant artifacts)
-    #   - 40 GB   → Qwen3.5-9B safe for H1 backward; 27B at NF4 may OOM
-    #   - 16 GB   → Qwen3.5-4B
+    # Qwen3.5 uses a brand-new hybrid attention architecture ("qwen3_5"
+    # model_type) that is not yet on the transformers main branch as of
+    # writing — loading it raises "does not recognize this architecture".
+    # Default to Qwen3 (confirmed working on standard transformers). To opt
+    # into Qwen3.5 set MODEL_OVERRIDE='Qwen/Qwen3.5-27B' AFTER installing a
+    # transformers branch that registers qwen3_5 (e.g. a feature PR or a
+    # newer release than the one shipping today).
     if not os.environ.get('MODEL_OVERRIDE'):
         if gpu_gb >= 70:
-            recommended = 'Qwen/Qwen3.5-27B'   # bf16 fits
+            recommended = 'Qwen/Qwen3-32B'    # bf16 fits, ~64 GB
             os.environ['USE_4BIT'] = '0'
         elif gpu_gb >= 36:
-            recommended = 'Qwen/Qwen3.5-9B'    # safe for H1 backward
+            recommended = 'Qwen/Qwen3-14B'    # safe for H1 backward
+        elif gpu_gb >= 12:
+            recommended = 'Qwen/Qwen3-8B'
         else:
-            recommended = 'Qwen/Qwen3.5-4B'
+            recommended = 'Qwen/Qwen3-4B'
         os.environ['MODEL_OVERRIDE'] = recommended
         print(f'>>> AUTO-PICK: MODEL_OVERRIDE={{recommended}}')
-        print('    (override by setting MODEL_OVERRIDE before this cell)')
+        print('    (To try Qwen3.5 (multimodal, requires bleeding-edge')
+        print('     transformers): set MODEL_OVERRIDE="Qwen/Qwen3.5-27B")')
 
     # ---------- Adaptive N_BENCH ----------
     if gpu_gb >= 70:
