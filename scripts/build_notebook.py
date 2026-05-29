@@ -75,11 +75,40 @@ full traceback printing so Colab failures are visible.
 cells.append(md("## 1. Setup — install, GPU check, clone, HF login"))
 
 cells.append(code(
+    "# Boot disk on Vertex AI Colab Enterprise is ~101 GB and starts ~60 GB\n"
+    "# full (system image). /content is the 527 GB workspace. Without\n"
+    "# redirection, pip's temp build files + pip cache + HF cache all land\n"
+    "# on the boot disk and can fill it during the install — at which point\n"
+    "# Vertex AI health checks fail and the runtime is marked unhealthy.\n"
+    "# Set EVERY cache dir to /content BEFORE the first pip call.\n"
+    "import os, subprocess, sys, shutil\n"
+    "from pathlib import Path\n"
+    "_C = Path('/content/.cache') if Path('/content').exists() else None\n"
+    "if _C:\n"
+    "    _C.mkdir(parents=True, exist_ok=True)\n"
+    "    (_C / 'pip').mkdir(exist_ok=True)\n"
+    "    (_C / 'tmp').mkdir(exist_ok=True)\n"
+    "    os.environ['PIP_CACHE_DIR']  = str(_C / 'pip')\n"
+    "    os.environ['TMPDIR']         = str(_C / 'tmp')\n"
+    "    os.environ['HF_HOME']        = str(_C / 'huggingface')\n"
+    "    os.environ['HF_HUB_CACHE']   = str(_C / 'huggingface')\n"
+    "    os.environ['TRANSFORMERS_CACHE'] = str(_C / 'transformers')\n"
+    "    os.environ['TORCH_HOME']     = str(_C / 'torch')\n"
+    "    os.environ['XDG_CACHE_HOME'] = str(_C)\n"
+    "    print(f'Caches → {_C} (boot disk is small; this is mandatory)')\n"
+    "\n"
+    "def _disk(label=''):\n"
+    "    for p in ('/', '/content'):\n"
+    "        if Path(p).exists():\n"
+    "            s = shutil.disk_usage(p)\n"
+    "            free = (s.total - s.used) / 1e9\n"
+    "            print(f'  [{label}] disk {p:<10} free={free:6.1f} GB')\n"
+    "_disk('start')\n"
+    "\n"
     "# Surgical upgrade: install transformers main with --no-deps so it does\n"
     "# NOT pull a newer torch / torchvision / pillow. Then pin transformers'\n"
     "# runtime deps to the *exact* versions it expects (it pins tokenizers\n"
     "# <=0.23.0, which a bare `--upgrade tokenizers` overshoots to 0.23.1).\n"
-    "import subprocess, sys\n"
     "def _pip(*args):\n"
     "    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', *args], check=False)\n"
     "\n"
@@ -99,12 +128,17 @@ cells.append(code(
     "_pip('--upgrade', '--no-deps', 'accelerate>=0.34', 'bitsandbytes>=0.43')\n"
     "# 4. plain installs of small libs (no risk to torch/pillow)\n"
     "_pip('scikit-learn', 'matplotlib', 'tqdm', 'datasets', 'nbformat', 'ipywidgets')\n"
+    "_disk('after step 4')\n"
     "# 5. Pillow self-heal if a prior run pulled pillow 12 (PIL.ImageText breaks).\n"
     "try:\n"
     "    import PIL.ImageText  # canary for pillow 12 ABI break\n"
     "except Exception:\n"
     "    print('Repairing pillow (pinning <12) ...')\n"
     "    _pip('--force-reinstall', '--no-deps', 'pillow<12')\n"
+    "\n"
+    "# Free pip cache to reclaim disk now that everything is installed.\n"
+    "subprocess.run([sys.executable, '-m', 'pip', 'cache', 'purge'], check=False, capture_output=True)\n"
+    "_disk('after purge')\n"
     "\n"
     "# Drop the pre-imported transformers from Colab so we re-import the new one.\n"
     "import importlib\n"
@@ -128,6 +162,19 @@ cells.append(code(
     "        '\\n' + '=' * 70\n"
     "    )"
 ))
+
+# EMERGENCY DISK RECOVERY — run only if /  (boot disk) is filling up.
+# Wipes pip cache + HF cache + tmp on the boot disk and re-points to /content.
+cells.append(code("""
+# Optional: run this cell ONLY if the boot disk (/) is near full and the
+# normal cache redirect happened too late. Safe to leave commented out.
+# import subprocess, shutil, os
+# subprocess.run(['rm', '-rf', '/root/.cache/pip'], check=False)
+# subprocess.run(['rm', '-rf', '/root/.cache/huggingface'], check=False)
+# subprocess.run(['rm', '-rf', '/root/.cache/torch'], check=False)
+# subprocess.run(['rm', '-rf', '/tmp/pip*'], check=False)
+# print('Boot-disk caches wiped.')
+"""))
 
 # Set CUDA alloc config BEFORE torch imports anywhere — must be very first.
 cells.append(code("""
