@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -96,6 +96,44 @@ def _patch_mlp(mlp: nn.Module) -> None:
     import types
 
     mlp.forward = types.MethodType(_patched_mlp_forward, mlp)
+
+
+# Default candidate chain — tried in order, first one that loads wins.
+# Updated May 2026: Qwen3-32B-Instruct is the largest Qwen3-Instruct on HF
+# at the time of writing, and falls back gracefully to the 14B and 8B
+# variants on smaller GPUs.
+DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
+    "Qwen/Qwen3-32B-Instruct",
+    "Qwen/Qwen3-14B-Instruct",
+    "Qwen/Qwen3-8B-Instruct",
+    "Qwen/Qwen3-8B",
+    "m42-health/Llama3-Med42-8B",
+    "aaditya/Llama3-OpenBioLLM-8B",
+)
+
+
+def load_first_available(
+    candidates: Sequence[str] = DEFAULT_MODEL_CANDIDATES,
+    **kwargs: Any,
+) -> tuple["LoadedModel", str]:
+    """Try ``candidates`` in order, returning (model, picked_name).
+
+    Each failure prints the exception and proceeds. Raises if every
+    candidate fails. Pass ``token=`` for gated models (Med42).
+    """
+    last_err: Exception | None = None
+    for name in candidates:
+        try:
+            print(f"[load_first_available] trying {name} ...")
+            lm = load_model(name, **kwargs)
+            print(f"[load_first_available] loaded {name}")
+            return lm, name
+        except Exception as e:
+            print(f"[load_first_available] {name} failed: {type(e).__name__}: {e}")
+            last_err = e
+    raise RuntimeError(
+        f"All candidates failed. Last error: {last_err!r}"
+    )
 
 
 def load_model(
