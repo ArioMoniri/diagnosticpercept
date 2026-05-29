@@ -186,16 +186,46 @@ cells.append(code(
 ))
 
 # EMERGENCY DISK RECOVERY — run only if /  (boot disk) is filling up.
-# Wipes pip cache + HF cache + tmp on the boot disk and re-points to /content.
+# All lines are commented out by default. Uncomment what you need, run the
+# cell, then re-comment so a "Run All" doesn't trigger the wipes accidentally.
 cells.append(code("""
-# Optional: run this cell ONLY if the boot disk (/) is near full and the
-# normal cache redirect happened too late. Safe to leave commented out.
-# import subprocess, shutil, os
-# subprocess.run(['rm', '-rf', '/root/.cache/pip'], check=False)
-# subprocess.run(['rm', '-rf', '/root/.cache/huggingface'], check=False)
-# subprocess.run(['rm', '-rf', '/root/.cache/torch'], check=False)
-# subprocess.run(['rm', '-rf', '/tmp/pip*'], check=False)
-# print('Boot-disk caches wiped.')
+# === EMERGENCY DISK CLEANUP — uncomment, run, re-comment ====================
+# Use when `df -h /` shows < 10 GB free on the boot disk after the install
+# step. Each block is independent; you can run just one or all of them.
+#
+# import subprocess, shutil, gc, os
+# from pathlib import Path
+#
+# # 1. Boot-disk caches (the usual offenders).
+# for d in ('/root/.cache/pip', '/root/.cache/huggingface',
+#           '/root/.cache/torch', '/root/.cache/matplotlib',
+#           '/root/.cache/black', '/root/.triton'):
+#     subprocess.run(['rm', '-rf', d], check=False)
+# # 2. /tmp leftovers (pip build dirs, torch inductor, model shards).
+# for pattern in ('/tmp/pip*', '/tmp/torch*', '/tmp/cuda*', '/tmp/hf*'):
+#     subprocess.run(f'rm -rf {pattern}', shell=True, check=False)
+# # 3. The pip download cache (~/ + system).
+# subprocess.run(['python', '-m', 'pip', 'cache', 'purge'], check=False)
+# # 4. Stale HuggingFace lockfiles on the workspace (rare; safe to clear).
+# subprocess.run(['find', '/content/.cache/huggingface', '-name', '*.lock',
+#                 '-delete'], check=False)
+# # 5. Old results from a prior run on /content (only if you don't need them).
+# # shutil.rmtree('/content/results', ignore_errors=True)
+# # 6. CUDA allocator + Python garbage. Releases any held GPU mem.
+# gc.collect()
+# try:
+#     import torch
+#     if torch.cuda.is_available():
+#         torch.cuda.empty_cache()
+#         for i in range(torch.cuda.device_count()):
+#             torch.cuda.reset_peak_memory_stats(i)
+# except Exception:
+#     pass
+# for p in ('/', '/content'):
+#     if Path(p).exists():
+#         s = shutil.disk_usage(p)
+#         print(f'  disk {p:<10} free={(s.total-s.used)/1e9:6.1f} GB')
+# ============================================================================
 """))
 
 # Set CUDA alloc config BEFORE torch imports anywhere — must be very first.
@@ -318,19 +348,60 @@ print('Repo   :', repo_path)
 print('Results:', RESULTS)
 """)))
 
+cells.append(md(
+    "### 🚀 4× A100 quickstart\n\n"
+    "This notebook detects multiple GPUs automatically. On a "
+    "`a2-highgpu-4g` (4× A100 40 GB) or `a2-ultragpu-4g` (4× A100 80 GB) "
+    "VM the H6 benchmark runs in **data-parallel mode** — one model copy "
+    "per GPU, ~4× wall-clock speedup. NF4 quantization is forced in the "
+    "workers (~14 GB / GPU after load), so the full Qwen3-32B + the H6 "
+    "reasoning-chain KV cache + activations all fit on a single A100-40.\n\n"
+    "**Memory budget per worker (NF4, Qwen3-32B):**\n\n"
+    "| Item | A100-40 | A100-80 |\n"
+    "|------|--------:|--------:|\n"
+    "| Model weights (NF4) | ~14 GB | ~14 GB |\n"
+    "| Reasoning KV cache (512 new tok) | ~6 GB | ~6 GB |\n"
+    "| Per-step activations + scores | ~3 GB | ~3 GB |\n"
+    "| Safety headroom | ~17 GB | ~57 GB |\n"
+    "| **Per-GPU peak under H6** | **~23 GB / 40** | **~23 GB / 80** |\n\n"
+    "**Disk budget (Colab Enterprise):** boot disk is ~94 GB and starts ~90 % "
+    "full. The model download (~14 GB at NF4) **must** land on `/content` "
+    "(195 GB workspace). The Section 1 install cell already redirects every "
+    "cache to `/content/.cache/` before the first `pip install`, so under "
+    "normal operation the boot disk stays at its starting level.\n\n"
+    "If a previous run left the boot disk full anyway, uncomment the "
+    "*EMERGENCY DISK CLEANUP* cell above, run it once, then re-comment.\n\n"
+    "**Estimated wall time on 4× A100-40 G**, NF4, full pipeline:\n"
+    "H1 ~5 min · H2 ~3 min · H3 ~30 min · H4 ~5 min · H5 ~5 min · "
+    "H6 (1273 × 6 conditions, DP) ~50 min · H7 ~6 min · H8 ~10 min · "
+    "sycophancy ~15 min  ⇒  **~2 h 10 min end-to-end.**"
+))
+
 cells.append(code(wrap("preflight — print the run plan", """
 # Single-glance summary of what's about to happen so you can abort before
 # downloading 14 GB of model weights if anything is wrong.
 print('=' * 62)
 print(f'  Runtime       : {RUNTIME}')
-print(f'  GPU           : {"none" if not torch.cuda.is_available() else torch.cuda.get_device_name(0)}  ({"-" if not torch.cuda.is_available() else f"{torch.cuda.get_device_properties(0).total_memory/1e9:.0f} GB"})')
+_n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+if _n_gpu == 0:
+    print('  GPU           : none (CPU only)')
+else:
+    # PER-GPU memory report — important on 4× A100 because nvidia-smi may
+    # show a heterogeneous mix if one GPU was previously used by another
+    # process (Vertex AI doesn't always reset cleanly across notebook runs).
+    for i in range(_n_gpu):
+        p = torch.cuda.get_device_properties(i)
+        gb = p.total_memory / 1e9
+        used = torch.cuda.memory_allocated(i) / 1e9
+        print(f'  GPU{i}          : {p.name}  total={gb:.1f} GB  '
+              f'currently_allocated={used:.2f} GB')
 print(f'  Model         : {os.environ.get("MODEL_OVERRIDE", "(auto-pick from chain)")}')
 print(f'  Quantize 4bit : {os.environ.get("USE_4BIT", "auto")}')
 print(f'  N_BENCH       : {os.environ.get("N_BENCH", "default")}')
 print(f'  HF cache      : {os.environ.get("HF_HOME", "(default ~/.cache)")}')
+print(f'  CUDA alloc    : {os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "(unset)")}')
 print()
 print('  Estimated wall time on this hardware:')
-_n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
 _gpu_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if _n_gpu else 0
 _gpu_name = torch.cuda.get_device_name(0) if _n_gpu else ''
 # H100 ≈ 1.5× A100 fwd throughput. Wall time scales by 1/n_gpu for H6.
@@ -339,19 +410,29 @@ _throughput_factor = 1.0 if _is_h100 else 1.5  # A100 vs H100
 _par = max(1, _n_gpu)
 print(f'  Hardware: {_n_gpu}× {_gpu_name or "CPU"}  (parallel factor {_par})')
 if _gpu_gb >= 36:
-    h1   = round(5  * _throughput_factor, 1)            # H1 stays single-GPU
+    h1   = round(5  * _throughput_factor, 1)             # H1 stays single-GPU
     h6   = round(75 * _throughput_factor / _par, 1)      # parallelized
-    h7   = round(3  * _throughput_factor, 1)             # single-GPU
+    h7   = round(6  * _throughput_factor, 1)             # single-GPU
     syc  = round(15 * _throughput_factor, 1)             # single-GPU for now
     total = h1 + h6 + h7 + syc
     print(f'    H1 discover           ~{h1} min  (single GPU)')
-    print(f'    H6 deep (1273×3)      ~{h6} min  ({_par}× parallel)')
+    print(f'    H6 deep (1273×6)      ~{h6} min  ({_par}× parallel)')
     print(f'    H7 (300 items)        ~{h7} min  (single GPU)')
     print(f'    H8 + sycophancy       ~{syc} min  (single GPU)')
     print(f'    --- TOTAL             ~{total/60:.1f} hr')
 else:
     print('    Small-GPU budget — auto-pick will drop model size.')
 print('=' * 62)
+
+# On 4-GPU machines the data-parallel H6 worker holds an extra ~3 GB cuBLAS
+# workspace per device by default. Setting CUBLAS_WORKSPACE_CONFIG=:0:0
+# disables that pool (we don't need deterministic cuBLAS for inference) and
+# saves ~12 GB across 4 GPUs — buys back the H6 KV cache headroom on A100-40.
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':0:0')
+
+# expandable_segments cuts fragmentation across the many small allocs the
+# H6 reasoning chain produces (every gen.scores entry is its own alloc).
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 """)))
 
 cells.append(code(wrap("HF login (optional — only for gated models)", """
@@ -436,6 +517,33 @@ n_gpus   = torch.cuda.device_count() if torch.cuda.is_available() else 0
 """)))
 
 # (Legacy inline load block removed — smart_load_model handles everything.)
+
+cells.append(code(wrap("memory helpers — reclaim VRAM + disk between sections", """
+# Lightweight helpers we'll call between H1/H2/.../H8 to keep VRAM bounded.
+# H4-H7 each cache large activation tensors in Python globals; without an
+# explicit drop between sections the cuBLAS allocator's reserved pool
+# ratchets up and the H6 reasoning chain can OOM 90 min in.
+import gc, shutil
+from pathlib import Path
+
+def _free_vram(label=''):
+    gc.collect()
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            with torch.cuda.device(i):
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(i)
+        used = [torch.cuda.memory_allocated(i)/1e9
+                for i in range(torch.cuda.device_count())]
+        print(f'  [free_vram {label}] alloc/GPU = ' +
+              ' '.join(f'{u:.2f}' for u in used) + ' GB')
+    # /content disk free.
+    if Path('/content').exists():
+        s = shutil.disk_usage('/content')
+        print(f'  [free_vram {label}] /content free = {(s.total-s.used)/1e9:.1f} GB')
+
+_free_vram('post-load')
+""")))
 
 cells.append(code(wrap("sanity: h.retain_grad flows", """
 if torch.cuda.is_available():
@@ -629,6 +737,15 @@ for row in capability[:3]:
 (H1_RESULTS / 'capability.json').write_text(json.dumps(capability, indent=2))
 """)))
 
+cells.append(code(wrap("free VRAM after H1", """
+# Drop H1 per-token activation tensors. Keep cands / L_star / N_star / m_star.
+try:
+    del acts_pos, acts_neg, sw, sweep_objs, sweep_raw, capability_lp
+except NameError:
+    pass
+_free_vram('after H1')
+""")))
+
 cells.append(md(
     "## 4. H2 — disease-specific concept neurons\n\n"
     "For each of {sepsis, T2DM, MI, pneumonia, asthma, depression}: rank top-3 "
@@ -819,6 +936,16 @@ if len(patch_data) > 1:
     plt.tight_layout(); plt.savefig(H3_RESULTS / 'heatmap.png', dpi=140); plt.show()
 """)))
 
+cells.append(code(wrap("free VRAM after H3 drill", """
+# H3 full-d_ff drill holds 14k×per-pair scores in memory. Drop them; we only
+# need `critical` and `mean_per_layer` downstream.
+try:
+    del drill, drill_data, mat
+except NameError:
+    pass
+_free_vram('after H3')
+""")))
+
 cells.append(md(
     "## 6. H4 — hallucination / false-confidence neurons\n\n"
     "We push the model past its knowledge limit with a *trap* set: "
@@ -904,6 +1031,15 @@ ax.set_xlabel('layer'); ax.set_ylabel('a_trap_commit - a_pathognomonic_commit')
 ax.set_title('H4 — false-confidence signal by layer')
 ax.legend(); ax.grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H4_RESULTS / 'layer_profile.png', dpi=140); plt.show()
+""")))
+
+cells.append(code(wrap("free VRAM after H4", """
+# H4 captured per-bucket signed-max activations. Drop them before H5/H6.
+try:
+    del a_trap, a_pathog, a_hedge
+except NameError:
+    pass
+_free_vram('after H4')
 """)))
 
 cells.append(md(
@@ -995,6 +1131,22 @@ axes[1].grid(alpha=0.3)
 plt.tight_layout(); plt.savefig(H5_RESULTS / 'calibration.png', dpi=140); plt.show()
 """)))
 
+cells.append(code(wrap("free VRAM before H6 — critical on 4× A100", """
+# H6 is the big VRAM event. On 4× A100-40, each worker holds:
+#   ~14 GB model + ~6 GB KV cache + ~3 GB activations = ~23 GB peak.
+# Anything still pinned from H1-H5 in the main process leaks across the
+# spawn boundary — be aggressive here.
+try:
+    del cases, cases_dump, over_neurons  # H5 intermediates
+except NameError:
+    pass
+try:
+    del halluc_neurons, classifications  # large H4 outputs (already on disk)
+except NameError:
+    pass
+_free_vram('before H6')
+""")))
+
 cells.append(md(
     "## 8. H6 — Benchmark eval under interventions\n\n"
     "Runs **MedQA-USMLE** (4-option, ~1273 test questions; closest open analog "
@@ -1019,8 +1171,12 @@ H6_RESULTS = RESULTS / 'h6'; H6_RESULTS.mkdir(exist_ok=True)
 # H6 mode selection. Adaptive N_BENCH was set in the env-check cell based
 # on GPU memory: 1273 on H100/A100-80G, 600 on A100-40G, 300 on smaller.
 # Override by uncommenting below.
-H6_MODE = 'DEEP'  # 'FAST' or 'DEEP'
-N_BENCH = int(os.environ.get('N_BENCH', '1273' if H6_MODE == 'DEEP' else '100'))
+_N_GPUS_PRE = torch.cuda.device_count() if torch.cuda.is_available() else 0
+# On 4+ GPUs we can afford the full 6-condition × 1273-item run (~50 min DP).
+# On 1-2 GPUs default to 3 conditions × 1273 to keep wall-time bounded.
+H6_MODE = 'DEEP_FULL' if _N_GPUS_PRE >= 4 else 'DEEP'  # 'FAST' / 'DEEP' / 'DEEP_FULL'
+N_BENCH = int(os.environ.get('N_BENCH',
+              '1273' if H6_MODE in ('DEEP', 'DEEP_FULL') else '100'))
 DATASET = 'GBaker/MedQA-USMLE-4-options-hf'
 print(f'Loading {DATASET} (n={N_BENCH or "ALL"})')
 items = load_medqa(DATASET, split='test', n=N_BENCH, seed=0)
@@ -1054,9 +1210,11 @@ ALL_CONDITIONS = {
     'h4_h5_combined':      ablate_neurons_factory(lm.layers, combined),
 }
 DEEP_KEYS = ['baseline', 'h1_gate_anchor', 'h5_ablate_overconf']
-CONDITIONS = (
-    {k: ALL_CONDITIONS[k] for k in DEEP_KEYS} if H6_MODE == 'DEEP' else ALL_CONDITIONS
-)
+if H6_MODE == 'DEEP':
+    CONDITIONS = {k: ALL_CONDITIONS[k] for k in DEEP_KEYS}
+else:
+    # FAST or DEEP_FULL → run all six.
+    CONDITIONS = ALL_CONDITIONS
 print(f'\\nMode = {H6_MODE} → {len(CONDITIONS)} conditions × {len(items)} questions')
 """)))
 
@@ -1085,8 +1243,8 @@ if N_GPUS > 1:
     condition_specs['h5_ablate_overconf'] = dict(
         type='ablate', neurons=top_overconf,
     )
-    # If you flipped H6_MODE to 'FAST' (all 6 conds) include those too:
-    if H6_MODE == 'FAST':
+    # FAST or DEEP_FULL → run all six conditions in parallel.
+    if H6_MODE in ('FAST', 'DEEP_FULL'):
         condition_specs['h3_zero_layer']      = dict(type='zero_mlp', layers=[int(critical)])
         condition_specs['h4_ablate_halluc']   = dict(type='ablate', neurons=top_halluc)
         condition_specs['h4_h5_combined']     = dict(type='ablate', neurons=combined)
@@ -1216,6 +1374,17 @@ import json as _json
 print('\\nWrote', H6_RESULTS / 'consensus_flip.json')
 """)))
 
+cells.append(code(wrap("free VRAM before H7", """
+# After H6 the main process still holds all_results (a few hundred MB of
+# Python dicts). H7 runs a fresh per-question forward + backward pass and
+# needs every spare MB of VRAM. Drop the heavy globals.
+try:
+    del rows  # the comparison.csv parse keeps 1273 dict rows in memory
+except NameError:
+    pass
+_free_vram('before H7')
+""")))
+
 cells.append(md(
     "## 10. H7 — Calibration-failure layers at MedQA scale\n\n"
     "Repeat the H5 analysis (Pearson r between per-layer activation and "
@@ -1330,6 +1499,16 @@ for c in ['h5_ablate_overconf', 'h7_ablate_miscal', 'h7_anchor_calibrated']:
         delta = summary[c]['brier_at_answer'] - base['brier_at_answer']
         d_acc = summary[c]['accuracy'] - base['accuracy']
         print(f'  {c:<24}  ΔBrier={delta:+.4f}   Δacc={d_acc:+.3f}')
+""")))
+
+cells.append(code(wrap("free VRAM after H7", """
+# h7_acts is up to 16 layers × N × d_ff ≈ several hundred MB. Drop it; the
+# ranked miscal_neurons + per-row dump are already on disk.
+try:
+    del h7_acts, h7_rows
+except NameError:
+    pass
+_free_vram('after H7')
 """)))
 
 cells.append(md(
@@ -1621,6 +1800,15 @@ if syc_neurons:
                  'insistence_pred': c.insistence_pred,
                  'insistence_pred_ablated': pred} for c, pred in ablated]
     (SYC_RESULTS / 'ablation.json').write_text(json.dumps(abl_log, indent=2))
+""")))
+
+cells.append(code(wrap("free VRAM before bridge / manifest", """
+# Drop sycophancy intermediates before entering the persistent bridge loop.
+try:
+    del cases, ablated
+except NameError:
+    pass
+_free_vram('end-of-pipeline')
 """)))
 
 cells.append(md(
