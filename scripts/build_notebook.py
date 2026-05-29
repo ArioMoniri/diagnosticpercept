@@ -462,7 +462,10 @@ else:
 if 'USE_4BIT' in os.environ:
     USE_4BIT = bool(int(os.environ['USE_4BIT']))
 else:
-    USE_4BIT = total_gb < 36.0   # leave headroom for H1 backward on 40 GB
+    # Threshold at 48 GB so A100 40GB (reports ~42 GB after driver overhead)
+    # uses NF4. bf16 27B needs ~64 GB weights + ~64 GB backward = 128 GB,
+    # which doesn't fit on a 40 GB GPU even after spreading 4 ways.
+    USE_4BIT = total_gb < 48.0
 print(f'GPU total: {total_gb:.1f} GB  |  use_4bit = {USE_4BIT}')
 
 # Default chain is QWEN-ONLY. To force a different Qwen variant set
@@ -473,18 +476,25 @@ token = os.environ.get('HF_TOKEN')
 print(f'Candidate chain ({len(candidates)} entries):')
 for c in candidates: print(f'  - {c}')
 
-# Multi-GPU: spread the model across all visible GPUs so the backward pass
-# (H1 discovery + sanity) has headroom. Without max_memory, accelerate puts
-# everything on GPU0 if it fits, then backward OOMs needing 2× the weights.
+# Multi-GPU spreading is only useful when the model in bf16 won't fit on
+# one GPU alongside its backward pass. When USE_4BIT=True the model is
+# small (~14 GB for 27B) and fits one GPU with ample backward headroom —
+# spreading then hurts (cross-GPU collectives) without helping. So:
+#   USE_4BIT=False + n_gpus>1 → spread, max_memory hint
+#   USE_4BIT=True             → single-GPU, ignore the extra GPUs (parallel
+#                               H6 path uses them via separate workers)
 n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 max_memory = None
-if n_gpus > 1:
-    # Reserve ~25% of each GPU for weights; leaves 75% for backward grads /
-    # activations / KV cache. For Qwen3.6-27B bf16 (~64 GB) on 4× 80GB:
-    # 64/4 = 16 GB weights/GPU, 64 GB free/GPU for backward → comfortable.
-    per_gpu_gb = int(torch.cuda.get_device_properties(0).total_memory / 1e9 * 0.25)
+if not USE_4BIT and n_gpus > 1:
+    # Reserve a fixed share per GPU. For 27B bf16 = 64 GB we need at least
+    # 16 GB/GPU on a 4-GPU setup, plus headroom for backward. On A100 40GB
+    # we can't do bf16 even spread, so this branch should only fire on
+    # ≥80 GB cards (where USE_4BIT was set to False above).
+    per_gpu_gb = max(20, int(total_gb * 0.25))
     max_memory = {i: f'{per_gpu_gb}GiB' for i in range(n_gpus)}
-    print(f'Multi-GPU mode ({n_gpus} GPUs): max_memory={max_memory}')
+    print(f'Multi-GPU mode ({n_gpus} GPUs, bf16): max_memory={max_memory}')
+elif USE_4BIT:
+    print(f'Single-GPU mode (NF4 ~14 GB fits easily; extras used by H6 parallel path).')
 
 lm, MODEL_NAME = load_first_available(
     candidates=candidates, token=token, quantize_4bit=USE_4BIT,
