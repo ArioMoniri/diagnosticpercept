@@ -107,6 +107,20 @@ def _patch_mlp(mlp: nn.Module) -> None:
 # below are verified to exist on huggingface.co/Qwen at the time of
 # writing. Qwen3.5 names were speculative and have been removed.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
+    # Qwen3.5 — exact repo name unknown at training time. We try both
+    # Qwen3 style (no suffix) and Qwen2.5 style (-Instruct suffix). If the
+    # real name differs, set MODEL_OVERRIDE to it and skip the guesses.
+    "Qwen/Qwen3.5-72B-Instruct",
+    "Qwen/Qwen3.5-72B",
+    "Qwen/Qwen3.5-32B-Instruct",
+    "Qwen/Qwen3.5-32B",
+    "Qwen/Qwen3.5-14B-Instruct",
+    "Qwen/Qwen3.5-14B",
+    "Qwen/Qwen3.5-8B-Instruct",
+    "Qwen/Qwen3.5-8B",
+    "Qwen/Qwen3.5-7B-Instruct",
+    "Qwen/Qwen3.5-7B",
+    # Confirmed Qwen3 fallbacks (verified live on HF):
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
@@ -132,10 +146,12 @@ def load_first_available(
             print(f"[load_first_available] loaded {name}")
             return lm, name
         except Exception as e:
-            # HF "repo not found" comes with a misleading "pass a token"
-            # boilerplate — trim to the first line so the log is readable.
             msg = str(e).split("\n", 1)[0]
-            print(f"[load_first_available] {name} failed: {type(e).__name__}: {msg}")
+            # Quiet "repo not found" — those are expected when probing variants.
+            if "is not a local folder and is not a valid model identifier" in msg:
+                print(f"[load_first_available]   {name}: not on HF, skipping")
+            else:
+                print(f"[load_first_available]   {name} failed: {type(e).__name__}: {msg}")
             last_err = e
     raise RuntimeError(
         f"All candidates failed. Last error: {last_err!r}"
