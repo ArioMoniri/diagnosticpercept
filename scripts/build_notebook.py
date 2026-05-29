@@ -101,6 +101,21 @@ import os, sys, subprocess, json, time, traceback, importlib
 from pathlib import Path
 import torch
 
+# Runtime detection — free Colab vs Colab Enterprise (Vertex Workbench) vs other.
+def _detect_runtime():
+    if 'COLAB_RELEASE_TAG' in os.environ or 'COLAB_GPU' in os.environ:
+        try:
+            import google.colab  # noqa: F401
+            return 'colab_free'
+        except ImportError:
+            pass
+    if any(k in os.environ for k in ('GOOGLE_CLOUD_PROJECT', 'VERTEX_PRODUCT')):
+        return 'colab_enterprise'
+    if 'JUPYTERHUB_USER' in os.environ:
+        return 'jupyterhub'
+    return 'local'
+RUNTIME = _detect_runtime()
+print(f'Runtime: {{RUNTIME}}')
 print('Python:', sys.version.split()[0])
 print('Torch :', torch.__version__)
 print('CUDA  :', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu only')
@@ -150,24 +165,28 @@ def _resolve_hf_token():
     if os.environ.get('HF_TOKEN'):
         print('HF_TOKEN already set in env.')
         return
+    # Free Colab has google.colab.userdata; Colab Enterprise does NOT.
+    if RUNTIME == 'colab_free':
+        try:
+            from google.colab import userdata
+            tok = userdata.get('HF_TOKEN')
+            if tok:
+                os.environ['HF_TOKEN'] = tok
+                print('HF_TOKEN loaded from Colab secret.')
+                return
+        except Exception:
+            pass
+    print('No HF_TOKEN in env.')
+    if RUNTIME == 'colab_enterprise':
+        print('Colab Enterprise: set HF_TOKEN as a runtime-template env var,')
+        print('or paste into the manual cell below.')
+    else:
+        print('Qwen3 is open-weights so this is fine to skip for the default chain.')
     try:
-        from google.colab import userdata
-        tok = userdata.get('HF_TOKEN')
-        if tok:
-            os.environ['HF_TOKEN'] = tok
-            print('HF_TOKEN loaded from Colab secret.')
-            return
-    except Exception:
-        pass
-    print('No HF_TOKEN in env or Colab secrets.')
-    print('Qwen3 is open-weights so this is fine to skip for the default chain.')
-    try:
-        # Enable widgets if Colab/Jupyter hasn't already.
-        from IPython.display import display
         from huggingface_hub import notebook_login
         notebook_login()
-        print('Token widget rendered above ↑ (paste + Login). '
-              'If you do not see a widget, use the manual paste cell below.')
+        print('Token widget rendered above ↑ (paste + Login).')
+        print('If you do not see a widget, use the manual paste cell below.')
     except Exception as e:
         print(f'(notebook_login unavailable: {e})')
 
@@ -1399,17 +1418,20 @@ cells.append(code(wrap("bridge — authenticate + start the poll loop", """
 import os
 from src.bridge import setup_git_auth, run_bridge_loop
 
-# Provide a GitHub PAT via Colab secret 'GH_TOKEN' for push-back capability.
-try:
-    from google.colab import userdata
-    if not os.environ.get('GH_TOKEN'):
+# GH_TOKEN resolution: env var → free-Colab secret → manual prompt.
+if not os.environ.get('GH_TOKEN'):
+    if RUNTIME == 'colab_free':
         try:
+            from google.colab import userdata
             os.environ['GH_TOKEN'] = userdata.get('GH_TOKEN')
-            print('GH_TOKEN loaded from Colab secrets')
+            print('GH_TOKEN loaded from Colab secret')
         except Exception as _e:
-            print('GH_TOKEN secret missing — bridge will read but not push.', _e)
-except Exception:
-    pass
+            print('GH_TOKEN secret missing — bridge will read but not push.')
+    elif RUNTIME == 'colab_enterprise':
+        print('Colab Enterprise: set GH_TOKEN in the runtime template env vars,')
+        print('or run os.environ["GH_TOKEN"] = "ghp_..." in a cell before this one.')
+    else:
+        print('GH_TOKEN not set — bridge will read but not push.')
 
 setup_git_auth(REPO_DIR)
 

@@ -14,10 +14,14 @@ safety alignment to **clinical diagnosis** in a medical LLM.
 3. Runtime → A100 GPU, High-RAM
 4. Run all cells — automation covers model load → H1 → H8 → results JSON
 
-The default model chain is **Qwen-only** (Qwen3-Next → Qwen3.5 → Qwen3
-size ladder). No HF token required for any of these — they're open weights.
-Override with `os.environ['MODEL_OVERRIDE']='Qwen/<repo-name>'` before the
-load cell if you want a specific variant.
+The default model chain is **Qwen-only** (Qwen3.5-27B → Qwen3 size ladder).
+No HF token required — all are open weights. Override with
+`os.environ['MODEL_OVERRIDE']='Qwen/<repo-name>'` before the load cell.
+
+**For long unattended runs without disconnects, switch to Colab Enterprise**
+on Google Cloud — see [`docs/colab-enterprise.md`](docs/colab-enterprise.md)
+for the runtime template config and a `scripts/submit_to_vertex.py` batch
+runner.
 
 ## Hypotheses
 
