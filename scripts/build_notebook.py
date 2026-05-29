@@ -75,16 +75,33 @@ full traceback printing so Colab failures are visible.
 cells.append(md("## 1. Setup — install, GPU check, clone, HF login"))
 
 cells.append(code(
-    "# Qwen3.5 needs a very recent transformers (model_type='qwen3_5'). The\n"
-    "# stable release on Colab is often too old, so we install from git\n"
-    "# main. accelerate + bitsandbytes pinned for compatibility.\n"
-    "!pip install -q --upgrade 'transformers @ git+https://github.com/huggingface/transformers.git' 'accelerate>=0.34' bitsandbytes scikit-learn matplotlib tqdm datasets nbformat ipywidgets 2>&1 | tail -5\n"
+    "# Qwen3.5 / Qwen3.6 use model_type='qwen3_5' (a 3:1 hybrid Gated\n"
+    "# DeltaNet / Gated Attention architecture). Class: Qwen3_5ForCausalLM.\n"
+    "# Per HF docs (huggingface.co/docs/transformers/model_doc/qwen3_5),\n"
+    "# the install spec is the git@main extras-`serving` variant.\n"
+    "# Vision deps (torchvision, pillow) are needed because Qwen3.5 is a\n"
+    "# unified VLM — even text-only loading walks the vision tower init.\n"
+    "!pip install -q --upgrade 'transformers[serving] @ git+https://github.com/huggingface/transformers.git@main' 'accelerate>=0.34' bitsandbytes torchvision pillow scikit-learn matplotlib tqdm datasets nbformat ipywidgets 2>&1 | tail -8\n"
+    "\n"
+    "# After upgrading transformers, the kernel MUST be restarted so the new\n"
+    "# version replaces the one Colab pre-imported. Detect: if the freshly-\n"
+    "# imported transformers does not register the Qwen3_5 architecture,\n"
+    "# auto-restart the kernel and ask the user to Run All again.\n"
     "import importlib, sys\n"
     "for m in [k for k in list(sys.modules) if k == 'transformers' or k.startswith('transformers.')]:\n"
     "    del sys.modules[m]\n"
     "importlib.invalidate_caches()\n"
     "import transformers\n"
-    "print('transformers', transformers.__version__)"
+    "_has_q35 = hasattr(transformers, 'Qwen3_5ForCausalLM')\n"
+    "print(f'transformers {transformers.__version__}  Qwen3_5 registered: {_has_q35}')\n"
+    "if not _has_q35:\n"
+    "    print('>>> kernel restart required so the upgraded transformers is the'\n"
+    "          ' one actually loaded. Restarting now ...')\n"
+    "    import os, IPython\n"
+    "    try:\n"
+    "        IPython.Application.instance().kernel.do_shutdown(True)\n"
+    "    except Exception:\n"
+    "        os._exit(00)"
 ))
 
 # Set CUDA alloc config BEFORE torch imports anywhere — must be very first.
@@ -149,27 +166,25 @@ if torch.cuda.is_available():
     print(f'GPU: {{gpu_name}}  | Memory: {{gpu_gb:.1f}} GB')
 
     # ---------- Auto-pick model based on GPU class ----------
-    # Qwen3.5 uses a brand-new hybrid attention architecture ("qwen3_5"
-    # model_type) that is not yet on the transformers main branch as of
-    # writing — loading it raises "does not recognize this architecture".
-    # Default to Qwen3 (confirmed working on standard transformers). To opt
-    # into Qwen3.5 set MODEL_OVERRIDE='Qwen/Qwen3.5-27B' AFTER installing a
-    # transformers branch that registers qwen3_5 (e.g. a feature PR or a
-    # newer release than the one shipping today).
+    # Newest Qwen line as of May 2026 is Qwen3.6 (same arch as Qwen3.5,
+    # loaded by Qwen3_5ForCausalLM). Both require the git-main transformers
+    # upgrade handled by the install cell above. Qwen3 is the deeper
+    # fallback for older transformers.
     if not os.environ.get('MODEL_OVERRIDE'):
         if gpu_gb >= 70:
-            recommended = 'Qwen/Qwen3-32B'    # bf16 fits, ~64 GB
+            recommended = 'Qwen/Qwen3.6-27B'   # bf16 fits, ~64 GB
             os.environ['USE_4BIT'] = '0'
         elif gpu_gb >= 36:
-            recommended = 'Qwen/Qwen3-14B'    # safe for H1 backward
+            recommended = 'Qwen/Qwen3.5-9B'    # safe for H1 backward
         elif gpu_gb >= 12:
-            recommended = 'Qwen/Qwen3-8B'
+            recommended = 'Qwen/Qwen3.5-4B'
         else:
             recommended = 'Qwen/Qwen3-4B'
         os.environ['MODEL_OVERRIDE'] = recommended
         print(f'>>> AUTO-PICK: MODEL_OVERRIDE={{recommended}}')
-        print('    (To try Qwen3.5 (multimodal, requires bleeding-edge')
-        print('     transformers): set MODEL_OVERRIDE="Qwen/Qwen3.5-27B")')
+        print('    (Newer transformers required; install cell handles this.')
+        print('     To pin Qwen3 (stable on older transformers):')
+        print('       os.environ["MODEL_OVERRIDE"] = "Qwen/Qwen3-32B")')
 
     # ---------- Adaptive N_BENCH ----------
     if gpu_gb >= 70:

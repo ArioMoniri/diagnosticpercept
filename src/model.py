@@ -107,19 +107,19 @@ def _patch_mlp(mlp: nn.Module) -> None:
 # pattern; non-existent repos just print "not on HF, skipping" and we
 # proceed to the next.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    # Qwen3 (April 2025) — confirmed loadable on standard transformers.
-    # Default chain.
+    # Qwen3.6 (May 2026) — newest, same hybrid Gated DeltaNet / Gated
+    # Attention arch as Qwen3.5, loaded by the same Qwen3_5ForCausalLM
+    # class. Needs transformers main; the install cell handles this.
+    "Qwen/Qwen3.6-27B",
+    "Qwen/Qwen3.5-27B",
+    "Qwen/Qwen3.5-9B",
+    "Qwen/Qwen3.5-4B",
+    # Qwen3 (April 2025) — confirmed loadable on standard transformers
+    # without the git-main upgrade. Final fallbacks.
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
     "Qwen/Qwen3-4B",
-    # Qwen3.5 (May 2026) — natively multimodal, hybrid Gated DeltaNet /
-    # Gated Attention. Architecture not yet in transformers main as of
-    # writing; loading currently raises "does not recognize this
-    # architecture". Listed here as deeper fallbacks for future builds.
-    "Qwen/Qwen3.5-27B",
-    "Qwen/Qwen3.5-9B",
-    "Qwen/Qwen3.5-4B",
 )
 QWEN_PREFIX = "Qwen/"
 
