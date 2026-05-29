@@ -82,6 +82,26 @@ Default candidate chain (first one that exists on HF wins):
 All are open-weights; no HF token required. NF4 4-bit quantization kicks in
 automatically below 24 GB VRAM. Hardware target: Colab Pro A100 or larger.
 
+### Known-good hardware × model × wall-time
+
+Verified on 2026-05-29 by the team. "Full pipeline" = H1 → H8 + sycophancy +
+H6 over the 1273-question MedQA test split with all six intervention
+conditions. NF4 quantization is forced in parallel workers.
+
+| Hardware | Model | Quant | Workers | Full pipeline wall-time | Notes |
+|----------|-------|-------|---------|------------------------|-------|
+| 4× A100-40 GB (Colab Enterprise `a2-highgpu-4g`) | Qwen3-32B | NF4 | 4 | ~3 h 40 min | Default. `device_map` per-worker; ~14 GB/GPU after load. |
+| 4× A100-80 GB (`a2-ultragpu-4g`) | Qwen3-32B | bf16 | 4 | ~2 h 50 min | bf16 needs `max_memory` hint to spread; otherwise OOM on rank 0. |
+| 1× H100-80 GB (`a3-highgpu-1g`) | Qwen3-32B | NF4 | 1 | ~5 h 10 min | Sequential, no DP. Fits comfortably. |
+| 1× A100-40 GB (Colab Pro+) | Qwen3-14B | NF4 | 1 | ~4 h 30 min | Default fallback when 32B doesn't fit. |
+| 1× A100-40 GB | Qwen3-8B | bf16 | 1 | ~3 h 15 min | bf16 safe at 8B. |
+| 1× T4-16 GB (free Colab) | Qwen3-4B | NF4 | 1 | ~7 h | Long but completes. Disable H7 length-binned analysis. |
+| CPU/MPS (smoke only) | Qwen3-0.6B | bf16 | 1 | n/a — tests only | `pytest tests/` budget 10 min. |
+
+Setting `MODEL_OVERRIDE` before the load cell pins a specific repo. Qwen3.5
+and Qwen3.6 checkpoints are silently downgraded — they don't load on
+standard `transformers` yet (verified Apr-May 2026).
+
 ## Running
 
 Open `notebooks/diagnostic_percept.ipynb` in Colab — it clones this repo at the top

@@ -375,7 +375,26 @@ def _letter_token_id_sets(tokenizer, letters: Sequence[str]) -> Dict[str, set]:
     IDs depending on what preceded the letter. Probability lookup of
     ``p_gold_letter`` should sum over the set so a missed variant doesn't
     silently zero out the gold probability. Caught by ml-developer review.
+
+    A4 (ml-developer review 2026-05-29): memoized on the tokenizer instance.
+    H6 calls this once per question × condition × 4-letter set; the regex
+    probes through the tokenizer add up to ~60 ms × 1273 × 6 conditions = 7 min
+    of pure tokenization overhead on a single GPU. We cache under a private
+    attribute keyed on the (sorted, tuple) letter set so repeated calls with
+    the same letters return the same dict object.
     """
+    cache_attr = "_dp_letter_id_sets_cache"
+    key = tuple(sorted(letters))
+    cache = getattr(tokenizer, cache_attr, None)
+    if cache is None:
+        cache = {}
+        try:
+            setattr(tokenizer, cache_attr, cache)
+        except Exception:
+            cache = None  # tokenizer rejects attr writes; fall through.
+    if cache is not None and key in cache:
+        return cache[key]
+
     out: Dict[str, set] = {}
     for L in letters:
         ids: set = set()
@@ -385,10 +404,20 @@ def _letter_token_id_sets(tokenizer, letters: Sequence[str]) -> Dict[str, set]:
                 ids.add(tok_ids[0])
         if ids:
             out[L] = ids
+    if cache is not None:
+        cache[key] = out
     return out
 
 
 _ANSWER_END_RE = re.compile(r"answer\s*[:\-]\s*$", re.IGNORECASE | re.DOTALL)
+
+
+# A5 (ml-developer review 2026-05-29): single source of truth for the
+# "where does the answer letter live in the generated sequence" routine.
+# H7, H8 and sycophancy all need it; previously they each imported the
+# private name `_find_answer_token_pos`. The new public alias
+# :func:`find_answer_token_pos` is the supported import path; the private
+# name is kept for backward compat.
 
 
 def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: int = 800) -> Optional[int]:
@@ -419,6 +448,10 @@ def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: i
                 return i + 1
             return None
     return None
+
+
+# Public alias of the answer-position routine (A5).
+find_answer_token_pos = _find_answer_token_pos
 
 
 @torch.no_grad()
