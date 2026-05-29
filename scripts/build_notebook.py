@@ -75,7 +75,16 @@ full traceback printing so Colab failures are visible.
 cells.append(md("## 1. Setup — install, GPU check, clone, HF login"))
 
 cells.append(code(
-    "!pip -q install 'transformers>=4.44' accelerate bitsandbytes scikit-learn matplotlib tqdm datasets nbformat ipywidgets 2>&1 | tail -5"
+    "# Qwen3.5 needs a very recent transformers (model_type='qwen3_5'). The\n"
+    "# stable release on Colab is often too old, so we install from git\n"
+    "# main. accelerate + bitsandbytes pinned for compatibility.\n"
+    "!pip install -q --upgrade 'transformers @ git+https://github.com/huggingface/transformers.git' 'accelerate>=0.34' bitsandbytes scikit-learn matplotlib tqdm datasets nbformat ipywidgets 2>&1 | tail -5\n"
+    "import importlib, sys\n"
+    "for m in [k for k in list(sys.modules) if k == 'transformers' or k.startswith('transformers.')]:\n"
+    "    del sys.modules[m]\n"
+    "importlib.invalidate_caches()\n"
+    "import transformers\n"
+    "print('transformers', transformers.__version__)"
 ))
 
 # Set CUDA alloc config BEFORE torch imports anywhere — must be very first.
@@ -175,6 +184,16 @@ for path in ('/', '/content'):
         used_pct = 100 * s.used / s.total
         warn = ' !! LOW' if (s.total - s.used) < 10 * (1024**3) else ''
         print(f'Disk {{path:<10}}  {{s.used/1e9:6.1f}} / {{s.total/1e9:6.1f}} GB  ({{used_pct:.0f}}%){{warn}}')
+
+# Validate cache redirect — the model download (~14 GB at NF4, ~54 GB at bf16)
+# MUST land on /content or the boot disk fills up.
+_hf_home = os.environ.get('HF_HOME', '')
+if _hf_home and not _hf_home.startswith('/content'):
+    print('!! WARN: HF_HOME is', _hf_home, '— model will download to boot disk!')
+elif _hf_home:
+    print(f'HF cache → {{_hf_home}}  (/content has plenty of room)')
+else:
+    print('!! WARN: HF_HOME not set; model download will use ~/.cache (boot disk).')
 
 REPO_URL = '{REPO_URL}'
 REPO_DIR = 'diagnosticpercept'
