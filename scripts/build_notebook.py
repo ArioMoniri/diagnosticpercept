@@ -448,79 +448,21 @@ cells.append(md(
 ))
 
 cells.append(code(wrap("load model", """
-from src.model import load_first_available, set_seed, DEFAULT_MODEL_CANDIDATES
+# All decision logic lives in src/setup.py — fixes to GPU detection, model
+# auto-pick, or max_memory take effect on the next Run All without
+# re-importing the notebook (the env-check cell pulls latest src/ first).
+from src.setup import smart_load_model
+from src.model import set_seed
 set_seed(0)
 
-# 8B in bf16 = ~16 GB weights. Below 24 GB total VRAM we use NF4 quantization
-# (~5 GB weights, bf16 compute) so 14B/32B candidates can still fit on
-# Colab A100 (40 GB) or T4/L4 (15 GB).
-if torch.cuda.is_available():
-    total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-else:
-    total_gb = 0
-# Honor explicit USE_4BIT env (auto-set to 0 on 80GB+ GPUs in the env cell).
-if 'USE_4BIT' in os.environ:
-    USE_4BIT = bool(int(os.environ['USE_4BIT']))
-else:
-    # Threshold at 48 GB so A100 40GB (reports ~42 GB after driver overhead)
-    # uses NF4. bf16 27B needs ~64 GB weights + ~64 GB backward = 128 GB,
-    # which doesn't fit on a 40 GB GPU even after spreading 4 ways.
-    USE_4BIT = total_gb < 48.0
-print(f'GPU total: {total_gb:.1f} GB  |  use_4bit = {USE_4BIT}')
-
-# Default chain is QWEN-ONLY. To force a different Qwen variant set
-# MODEL_OVERRIDE='Qwen/<exact-repo-name>' before this cell.
-override = os.environ.get('MODEL_OVERRIDE')
-candidates = (override,) if override else DEFAULT_MODEL_CANDIDATES
-token = os.environ.get('HF_TOKEN')
-print(f'Candidate chain ({len(candidates)} entries):')
-for c in candidates: print(f'  - {c}')
-
-# Multi-GPU spreading is only useful when the model in bf16 won't fit on
-# one GPU alongside its backward pass. When USE_4BIT=True the model is
-# small (~14 GB for 27B) and fits one GPU with ample backward headroom —
-# spreading then hurts (cross-GPU collectives) without helping. So:
-#   USE_4BIT=False + n_gpus>1 → spread, max_memory hint
-#   USE_4BIT=True             → single-GPU, ignore the extra GPUs (parallel
-#                               H6 path uses them via separate workers)
-n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-max_memory = None
-if not USE_4BIT and n_gpus > 1:
-    # Reserve a fixed share per GPU. For 27B bf16 = 64 GB we need at least
-    # 16 GB/GPU on a 4-GPU setup, plus headroom for backward. On A100 40GB
-    # we can't do bf16 even spread, so this branch should only fire on
-    # ≥80 GB cards (where USE_4BIT was set to False above).
-    per_gpu_gb = max(20, int(total_gb * 0.25))
-    max_memory = {i: f'{per_gpu_gb}GiB' for i in range(n_gpus)}
-    print(f'Multi-GPU mode ({n_gpus} GPUs, bf16): max_memory={max_memory}')
-elif USE_4BIT:
-    print(f'Single-GPU mode (NF4 ~14 GB fits easily; extras used by H6 parallel path).')
-
-lm, MODEL_NAME = load_first_available(
-    candidates=candidates, token=token, quantize_4bit=USE_4BIT,
-    max_memory=max_memory,
-)
-
-# Loud warning if we ended up on something other than Qwen.
-if not MODEL_NAME.startswith('Qwen/'):
-    print('\\n' + '!' * 70)
-    print(f'! WARNING: loaded model is NOT a Qwen variant: {MODEL_NAME}')
-    print('! Set MODEL_OVERRIDE="" and re-run if you wanted Qwen.')
-    print('!' * 70)
-
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
-    used = torch.cuda.memory_allocated() / 1e9
-    print(f'\\n>>> Loaded: {MODEL_NAME}')
-    print(f'    layers = {lm.n_layers}')
-    print(f'    d_ff   = {lm.d_ff}')
-    print(f'    dtype  = {lm.dtype}')
-    print(f'    device = {lm.device}')
-    print(f'    VRAM used after load: {used:.2f} GB')
-else:
-    print(f'\\n>>> Loaded: {MODEL_NAME} (CPU)')
-    print(f'    layers = {lm.n_layers}  d_ff = {lm.d_ff}')
+lm, MODEL_NAME = smart_load_model()
+# Legacy globals so downstream cells keep working.
+USE_4BIT = bool(int(os.environ.get('USE_4BIT', '0')))
+N_BENCH  = int(os.environ.get('N_BENCH', '1273'))
+n_gpus   = torch.cuda.device_count() if torch.cuda.is_available() else 0
 """)))
+
+# (Legacy inline load block removed — smart_load_model handles everything.)
 
 cells.append(code(wrap("sanity: h.retain_grad flows", """
 if torch.cuda.is_available():
