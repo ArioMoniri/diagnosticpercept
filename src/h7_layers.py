@@ -122,45 +122,229 @@ def collect_answer_position_acts(
             "p_top1_at_answer": p_top1,
             "p_gold_at_answer": p_gold,
             "correct": correct,
+            # M7 (ml-developer review 2026-05-29): reasoning-chain length is a
+            # known confound for calibration — longer chains are correlated
+            # with hedging, which lowers p_top1. We record it here so the
+            # ranker can stratify by length quartile (see
+            # `rank_miscalibration_neurons(..., length_binned=True)`).
+            "chain_len": int(ans_pos),
         })
 
     stacked = {L: torch.stack(acts_per_layer[L], dim=0) for L in layer_indices if acts_per_layer[L]}
     return rows, stacked
 
 
+def _pearson_r_pvalue(r: torch.Tensor, n: int) -> torch.Tensor:
+    """Two-sided p-value for Pearson r at sample size n. Vectorized."""
+    # t = r * sqrt(n-2) / sqrt(1 - r^2)
+    r = r.clamp(-0.9999, 0.9999)
+    t = r * torch.sqrt(torch.tensor(n - 2, dtype=r.dtype)) / torch.sqrt(1 - r ** 2)
+    # Approximate two-sided p via complementary error of student-t. For large
+    # n the Student-t converges to normal; use the normal approximation
+    # (n >> 30 in all our use cases). We import scipy lazily to keep the
+    # module light.
+    try:
+        from scipy import stats
+        return torch.tensor(
+            2 * (1 - stats.t.cdf(t.abs().numpy(), df=n - 2)), dtype=r.dtype
+        )
+    except ImportError:
+        # Normal-approximation fallback (no scipy required).
+        import math
+        # erfc(|t|/sqrt(2)) — survival function of |Z|; doubled for two-sided.
+        return torch.tensor(
+            [math.erfc(float(abs(ti)) / math.sqrt(2)) for ti in t],
+            dtype=r.dtype,
+        )
+
+
+def _bh_fdr(p: torch.Tensor, q: float = 0.05) -> torch.Tensor:
+    """Benjamini-Hochberg FDR: return Boolean mask of p-values to reject."""
+    n = p.numel()
+    order = torch.argsort(p)
+    p_sorted = p[order]
+    thresh = torch.arange(1, n + 1, dtype=p.dtype) * q / n
+    pass_mask = p_sorted <= thresh
+    if not pass_mask.any():
+        return torch.zeros_like(p, dtype=torch.bool)
+    k = int(pass_mask.nonzero().max().item()) + 1
+    cutoff = p_sorted[k - 1]
+    return p <= cutoff
+
+
 def rank_miscalibration_neurons(
     rows: Sequence[Dict[str, float]],
     acts: Dict[int, torch.Tensor],
     top_k: int = 20,
+    fdr_q: float = 0.05,
+    length_binned: bool = False,
 ) -> List[MiscalNeuron]:
-    """Per-neuron Pearson r between activation and ``miscal = p_top1 − correct``."""
+    """Per-neuron Pearson r between activation and ``miscal = p_top1 − correct``.
+
+    Applies Benjamini-Hochberg FDR (M2 from review): with ~13k neurons × 16
+    layers ≈ 200K tests, top-k by raw r contained many false positives at
+    realistic q. We BH-correct over the full neuron × layer pool and only
+    keep neurons whose FDR-adjusted p ≤ ``fdr_q``, then take top-k by r.
+
+    ``length_binned`` (M7): if True, partition rows into reasoning-chain-length
+    quartiles (using the ``chain_len`` field recorded by
+    :func:`collect_answer_position_acts`) and rank within each bin. The reported
+    Pearson r is then the *mean across bins* — a neuron whose r survives length
+    stratification reflects calibration, not chain-length effects. Returns an
+    empty list if any bin has < 3 cases (Pearson undefined).
+    """
+    if length_binned:
+        return _rank_length_binned(rows, acts, top_k=top_k, fdr_q=fdr_q)
     miscal = torch.tensor(
         [r["p_top1_at_answer"] - float(r["correct"]) for r in rows], dtype=torch.float32
     )  # [N]
     m_mean = miscal.mean()
     m_var = ((miscal - m_mean) ** 2).sum().clamp_min(1e-8)
-
-    # Define "overconfident" subset = top quartile by miscal.
     n = len(miscal)
-    q = max(1, n // 4)
-    sorted_idx = torch.argsort(miscal, descending=True)
-    high_idx = sorted_idx[:q].tolist()
-    low_idx = sorted_idx[-q:].tolist()
 
-    out: List[MiscalNeuron] = []
+    # Subset definitions for diagnostic mean-act fields.
+    q_count = max(1, n // 4)
+    sorted_idx = torch.argsort(miscal, descending=True)
+    high_idx = sorted_idx[:q_count].tolist()
+    low_idx = sorted_idx[-q_count:].tolist()
+
+    # Compute r for every (layer, neuron); then BH-correct globally.
+    all_r: List[float] = []
+    all_layer: List[int] = []
+    all_neuron: List[int] = []
+    all_A: Dict[int, torch.Tensor] = {}
     for L, A in acts.items():
         a_mean = A.mean(dim=0)
         a_var = ((A - a_mean) ** 2).sum(dim=0).clamp_min(1e-8)
         cov = ((A - a_mean) * (miscal - m_mean).unsqueeze(1)).sum(dim=0)
         r = cov / torch.sqrt(a_var * m_var)
-        topk = torch.topk(r, k=min(top_k, r.numel()))
-        for r_val, n_idx in zip(topk.values.tolist(), topk.indices.tolist()):
-            ni = int(n_idx)
-            out.append(MiscalNeuron(
-                layer=int(L), neuron=ni,
-                pearson_r=float(r_val), n=n,
-                mean_act_overconf=float(A[high_idx, ni].mean()),
-                mean_act_calib=float(A[low_idx, ni].mean()),
-            ))
+        for n_idx in range(r.numel()):
+            all_r.append(float(r[n_idx]))
+            all_layer.append(int(L))
+            all_neuron.append(int(n_idx))
+        all_A[int(L)] = A
+
+    r_tensor = torch.tensor(all_r)
+    p_tensor = _pearson_r_pvalue(r_tensor, n)
+    pass_mask = _bh_fdr(p_tensor, q=fdr_q)
+    print(f"H7 FDR-corrected: {int(pass_mask.sum())}/{len(all_r)} neurons "
+          f"pass q={fdr_q} (would-be top-k by raw r had no correction)")
+
+    out: List[MiscalNeuron] = []
+    for i, (L, ni, r_val) in enumerate(zip(all_layer, all_neuron, all_r)):
+        if not bool(pass_mask[i].item()):
+            continue
+        out.append(MiscalNeuron(
+            layer=L, neuron=ni, pearson_r=r_val, n=n,
+            mean_act_overconf=float(all_A[L][high_idx, ni].mean()),
+            mean_act_calib=float(all_A[L][low_idx, ni].mean()),
+        ))
+    out.sort(key=lambda x: x.pearson_r, reverse=True)
+    return out[:top_k]
+
+
+def _rank_length_binned(
+    rows: Sequence[Dict[str, float]],
+    acts: Dict[int, torch.Tensor],
+    top_k: int = 20,
+    fdr_q: float = 0.05,
+    n_bins: int = 4,
+) -> List[MiscalNeuron]:
+    """M7: Pearson r averaged across length-stratified bins.
+
+    Within-bin Pearson removes the additive effect of chain length on both
+    activation and miscalibration. A neuron whose mean r across bins survives
+    BH-FDR over the union of all (layer × neuron × bin) tests is reported.
+    Robust to the case where ``chain_len`` is missing on some rows (those rows
+    are dropped before binning).
+    """
+    rows_with_len = [
+        (i, r) for i, r in enumerate(rows) if "chain_len" in r and r["chain_len"] is not None
+    ]
+    if len(rows_with_len) < n_bins * 3:
+        print(f"[H7 length-binned] only {len(rows_with_len)} rows with chain_len; "
+              f"need >= {n_bins * 3} for {n_bins}-bin analysis. Falling back to raw.")
+        return rank_miscalibration_neurons(rows, acts, top_k=top_k, fdr_q=fdr_q,
+                                          length_binned=False)
+
+    lens = torch.tensor([r["chain_len"] for _, r in rows_with_len], dtype=torch.float32)
+    # Quantile cutoffs.
+    qs = torch.linspace(0, 1, n_bins + 1)[1:-1]
+    cuts = torch.quantile(lens, qs)
+    # Bin index per row.
+    bin_idx = torch.zeros(len(lens), dtype=torch.long)
+    for cut in cuts:
+        bin_idx += (lens > cut).long()
+
+    # Per-bin Pearson r per neuron per layer.
+    bin_rs: Dict[int, Dict[int, List[float]]] = {}  # layer -> neuron -> [r_bin0, r_bin1, ...]
+    for b in range(n_bins):
+        b_mask = (bin_idx == b)
+        b_rows_idx = [rows_with_len[i][0] for i in range(len(rows_with_len)) if b_mask[i]]
+        if len(b_rows_idx) < 3:
+            continue
+        miscal_b = torch.tensor(
+            [rows[i]["p_top1_at_answer"] - float(rows[i]["correct"]) for i in b_rows_idx],
+            dtype=torch.float32,
+        )
+        m_mean = miscal_b.mean()
+        m_var = ((miscal_b - m_mean) ** 2).sum().clamp_min(1e-8)
+        for L, A_full in acts.items():
+            A = A_full[b_rows_idx]
+            a_mean = A.mean(dim=0)
+            a_var = ((A - a_mean) ** 2).sum(dim=0).clamp_min(1e-8)
+            cov = ((A - a_mean) * (miscal_b - m_mean).unsqueeze(1)).sum(dim=0)
+            r = cov / torch.sqrt(a_var * m_var)
+            bin_rs.setdefault(L, {})
+            for n_idx in range(r.numel()):
+                bin_rs[L].setdefault(n_idx, []).append(float(r[n_idx]))
+
+    # Mean r per (layer, neuron) over bins; require all bins contributed.
+    all_layer: List[int] = []
+    all_neuron: List[int] = []
+    all_r: List[float] = []
+    for L, ndict in bin_rs.items():
+        for n_idx, rs in ndict.items():
+            if len(rs) < n_bins:
+                continue
+            all_layer.append(int(L))
+            all_neuron.append(int(n_idx))
+            all_r.append(float(sum(rs) / len(rs)))
+
+    if not all_r:
+        return []
+
+    # Treat each (L, neuron) as a single Pearson r at the smallest bin's N.
+    n_min = min(
+        int((bin_idx == b).sum().item())
+        for b in range(n_bins)
+        if int((bin_idx == b).sum().item()) >= 3
+    )
+    r_tensor = torch.tensor(all_r)
+    p_tensor = _pearson_r_pvalue(r_tensor, n_min)
+    pass_mask = _bh_fdr(p_tensor, q=fdr_q)
+    print(f"H7 length-binned + FDR: {int(pass_mask.sum())}/{len(all_r)} neurons "
+          f"pass q={fdr_q} after {n_bins}-bin length stratification (n_min={n_min})")
+
+    n_total = len(rows_with_len)
+    # Diagnostic mean acts use overall (not within-bin) high/low miscal subsets.
+    miscal_full = torch.tensor(
+        [rows[i]["p_top1_at_answer"] - float(rows[i]["correct"]) for i, _ in rows_with_len],
+        dtype=torch.float32,
+    )
+    q_count = max(1, n_total // 4)
+    sorted_idx = torch.argsort(miscal_full, descending=True)
+    high_idx = [rows_with_len[i][0] for i in sorted_idx[:q_count].tolist()]
+    low_idx = [rows_with_len[i][0] for i in sorted_idx[-q_count:].tolist()]
+
+    out: List[MiscalNeuron] = []
+    for i, (L, ni, r_val) in enumerate(zip(all_layer, all_neuron, all_r)):
+        if not bool(pass_mask[i].item()):
+            continue
+        out.append(MiscalNeuron(
+            layer=L, neuron=ni, pearson_r=r_val, n=n_total,
+            mean_act_overconf=float(acts[L][high_idx, ni].mean()),
+            mean_act_calib=float(acts[L][low_idx, ni].mean()),
+        ))
     out.sort(key=lambda x: x.pearson_r, reverse=True)
     return out[:top_k]

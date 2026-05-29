@@ -25,15 +25,42 @@ from typing import Dict, List, Optional, Sequence
 
 _LETTER_MENTION_RE = re.compile(r"\b\(?([A-E])\)?\b")
 
+# M6 (ml-developer review 2026-05-29): a most-frequent-letter heuristic over
+# the reasoning text over-calls "consensus flips" — incidental mentions like
+# "option B can be ruled out" can outvote a single decisive "the answer is D".
+# The stricter regex below matches *commitment* phrases ("the answer is X",
+# "best choice is X", "therefore X", "I choose X", "diagnosis is X") and only
+# falls back to the frequency heuristic when no commitment phrase fires.
+_COMMITMENT_LETTER_RE = re.compile(
+    r"(?:the\s+answer\s+is|therefore[, ]+|so\s+i\s+(?:would\s+)?(?:pick|choose|go\s+with)|"
+    r"best\s+(?:answer|choice|option)\s+is|i\s+(?:would\s+)?(?:pick|choose|select|go\s+with)|"
+    r"(?:my\s+)?diagnosis\s+is|the\s+correct\s+answer\s+is|"
+    r"most\s+likely(?:\s+answer)?\s+is)"
+    r"\s*\(?([A-E])\)?\b",
+    re.IGNORECASE,
+)
+
 
 def implied_letter(reasoning: str, valid_letters: Sequence[str]) -> Optional[str]:
     """Infer the letter the reasoning text *votes for*.
 
-    Heuristic: count all standalone-letter mentions in the reasoning chain;
-    return the most-frequent letter (restricted to ``valid_letters``). Ties
-    return ``None`` so the analyzer doesn't over-call.
+    Order of preference (M6, stricter):
+      1. **Commitment-phrase match.** Look for "the answer is X", "I choose X",
+         "best choice is X", etc. If any match is in ``valid_letters``, the
+         *last* such phrase wins (the model's final commitment within the
+         reasoning chain).
+      2. **Frequency fallback.** Count all standalone-letter mentions; return
+         the most-frequent letter. Ties → ``None``.
     """
     valid = {v.upper() for v in valid_letters}
+
+    # 1. Commitment-phrase match (preferred).
+    matches = [m.group(1).upper() for m in _COMMITMENT_LETTER_RE.finditer(reasoning)]
+    matches = [L for L in matches if L in valid]
+    if matches:
+        return matches[-1]
+
+    # 2. Frequency fallback.
     counts: Counter = Counter()
     for m in _LETTER_MENTION_RE.finditer(reasoning):
         L = m.group(1).upper()

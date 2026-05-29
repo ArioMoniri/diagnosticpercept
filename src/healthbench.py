@@ -210,9 +210,66 @@ _PROMPT_TEMPLATE = (
 )
 
 
-def render_prompt(item: MCQItem) -> str:
+# M4 (ml-developer review 2026-05-29): single-template results are sensitive
+# to prompt wording — accuracy can swing ±3 pp by tweaking the system line.
+# We define an *ensemble* of 5 paraphrases and expose them so the H6 driver
+# can run each, then report mean ± std across templates. All five end with
+# the same "Answer: <letter>" trailer so `_find_answer_token_pos` and
+# `parse_letter` work unchanged.
+_PROMPT_TEMPLATE_ENSEMBLE: List[str] = [
+    _PROMPT_TEMPLATE,
+    # Variant 1: terser, no persona.
+    (
+        "Answer the multiple-choice question. Briefly reason through the key "
+        "findings, then commit to a single letter.\n\n"
+        "Question: {question}\n"
+        "{options_block}\n\n"
+        "Reasoning: <reasoning>\n"
+        "Answer: <single letter>\n"
+    ),
+    # Variant 2: emphasizes step-by-step.
+    (
+        "You are a board-certified clinician. Think step by step about the "
+        "clinical findings and rule-outs, then provide your answer.\n\n"
+        "Question: {question}\n"
+        "{options_block}\n\n"
+        "Reasoning: <step-by-step>\n"
+        "Answer: <single letter>\n"
+    ),
+    # Variant 3: framed as a USMLE explanation request.
+    (
+        "Below is a USMLE-style clinical vignette. Explain which choice best "
+        "fits the presentation in 1–3 sentences, then state your final letter.\n\n"
+        "Question: {question}\n"
+        "{options_block}\n\n"
+        "Reasoning: <brief explanation>\n"
+        "Answer: <single letter>\n"
+    ),
+    # Variant 4: differential-style framing.
+    (
+        "You are evaluating a clinical case. Identify the most-likely diagnosis "
+        "from the options based on the findings, justifying briefly.\n\n"
+        "Question: {question}\n"
+        "{options_block}\n\n"
+        "Reasoning: <one-paragraph justification>\n"
+        "Answer: <single letter>\n"
+    ),
+]
+
+
+def render_prompt(item: MCQItem, template: Optional[str] = None) -> str:
+    """Render an MCQ prompt. ``template`` overrides the default; otherwise
+    the canonical :data:`_PROMPT_TEMPLATE` is used. Pass a template from
+    :data:`_PROMPT_TEMPLATE_ENSEMBLE` to participate in the M4 ensemble.
+    """
     block = "\n".join(f"{k}. {v}" for k, v in sorted(item.options.items()))
-    return _PROMPT_TEMPLATE.format(question=item.question.strip(), options_block=block)
+    tpl = template if template is not None else _PROMPT_TEMPLATE
+    return tpl.format(question=item.question.strip(), options_block=block)
+
+
+def list_prompt_templates() -> List[str]:
+    """Return the M4 prompt ensemble (5 paraphrases of the canonical prompt)."""
+    return list(_PROMPT_TEMPLATE_ENSEMBLE)
 
 
 _LETTER_RE = re.compile(r"\b([A-E])\b")
@@ -371,14 +428,18 @@ def run_one(
     condition: str,
     intervention_ctx=None,
     max_new_tokens: int = 512,
+    prompt_template: Optional[str] = None,
 ) -> BenchmarkRow:
     """One forward+generate under a single intervention context.
 
     Generates up to ``max_new_tokens`` so the model can lay out its reasoning
     *before* committing to a letter (the prompt template asks for both).
+
+    ``prompt_template`` selects one of the M4 ensemble paraphrases (see
+    :data:`_PROMPT_TEMPLATE_ENSEMBLE`); ``None`` keeps the canonical wording.
     """
     tok = lm.tokenizer
-    prompt = render_prompt(item)
+    prompt = render_prompt(item, template=prompt_template)
     enc = tok(prompt, return_tensors="pt").to(lm.device)
 
     ctx = intervention_ctx if intervention_ctx is not None else nullcontext()

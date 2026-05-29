@@ -238,3 +238,53 @@ def find_overconfidence_neurons(
 
     ranked.sort(key=lambda x: x.pearson_r, reverse=True)
     return cases, ranked[:top_k]
+
+
+# ---------------------------------------------------------------------------
+# H5 at scale (M1): route through H7's MCQ-style collector for N >= 200
+# ---------------------------------------------------------------------------
+
+
+def find_overconfidence_neurons_at_scale(
+    lm: LoadedModel,
+    items: Sequence,
+    layer_range: Optional[Tuple[int, int]] = None,
+    top_k: int = 20,
+    fdr_q: float = 0.05,
+    max_new_tokens: int = 220,
+):
+    """H5 at MedQA scale (N ≥ 200) via the H7 calibration signal.
+
+    The original H5 (``find_overconfidence_neurons``) measures
+    ``p_yes − p_dx`` on free-form vignettes — well-defined, but tiny N (~20 hard
+    cases) gives noisy Pearson rs and no way to FDR-correct over 13k×16
+    neurons. M1 (ml-developer review 2026-05-29) re-runs the H5 *correlation*
+    over the H7 MCQ-scale signal ``miscal = p_top1 − int(correct)`` for the
+    MedQA test set, where N=500+ makes even r≈0.1 detectable with BH-FDR.
+
+    The two H5 variants measure related but different overconfidence axes:
+
+      * H5 free-form: confidence on the *attestation* prompt minus actual top-1
+        probability on the *open-ended* dx prompt — captures "I sound confident
+        but I'm guessing".
+      * H5-at-scale (this fn): confidence at the answer letter minus correctness
+        — captures "I committed to a wrong letter with high p_top1".
+
+    Returns the same ``MiscalNeuron`` type as :func:`h7_layers.rank_miscalibration_neurons`.
+    """
+    from .h7_layers import collect_answer_position_acts, rank_miscalibration_neurons
+
+    if layer_range is None:
+        layer_indices = list(range(lm.n_layers // 2, lm.n_layers))
+    else:
+        layer_indices = list(range(*layer_range))
+
+    rows, acts = collect_answer_position_acts(
+        lm, items, layer_indices=layer_indices, max_new_tokens=max_new_tokens,
+    )
+    if len(rows) < 30:
+        raise RuntimeError(
+            f"H5-at-scale: only {len(rows)} questions yielded a parseable "
+            "answer position — model likely isn't honoring the prompt format."
+        )
+    return rows, rank_miscalibration_neurons(rows, acts, top_k=top_k, fdr_q=fdr_q)

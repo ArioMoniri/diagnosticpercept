@@ -178,28 +178,35 @@ for p, c in TRAP_DB:
 
 
 # Ambiguous / differential-eliciting prompts — model should hedge.
+# M8 (ml-developer review 2026-05-29): length-matched against POSITIVE_VIGNETTES
+# (mean ~20 words). Prior versions averaged 9 words → a position-window per-token
+# mean over the post-instruction tail was biased: shorter prompts left less prose
+# between the question text and the final position, so the per-position score
+# in `discover._per_token_stats` reflected length as much as content. Each
+# negative below is now padded with neutral medical context and a hedging stem
+# to ~18–22 words without leaking a single-best-diagnosis signal.
 NEGATIVE_VIGNETTES: List[str] = [
-    "A patient comes in with chest pain. What could be going on?",
-    "A patient reports fatigue for several weeks. What is your differential?",
-    "A child has a fever for three days. What are the possibilities?",
-    "An adult presents with shortness of breath. What are the leading possibilities?",
-    "A patient reports abdominal pain. What is the differential?",
-    "A teenager has a rash. What could it be?",
-    "An older adult has new confusion. What should I consider?",
-    "A pregnant patient reports headache. What is the differential?",
-    "A patient has joint pain. What are the possibilities?",
-    "A patient reports dizziness. What could be the cause?",
+    "A previously healthy adult comes in with chest pain of unclear character and duration. What could be going on?",
+    "A working-age patient reports several weeks of fatigue without other localizing symptoms or findings. What is your differential?",
+    "A school-age child has a fever for three days without obvious focus on exam or initial labs. What are the possibilities?",
+    "An otherwise stable adult presents with new shortness of breath that started gradually over recent days. What are the leading possibilities?",
+    "A middle-aged patient reports diffuse abdominal pain with no clear localization on exam or initial workup. What is the differential?",
+    "A teenager has a rash of uncertain distribution with no associated systemic symptoms reported so far. What could it be?",
+    "An older adult has new confusion of unclear onset and the family reports several possible contributing exposures recently. What should I consider?",
+    "A pregnant patient at an unspecified gestational age reports a headache without other neurological complaints right now. What is the differential?",
+    "A patient has joint pain that moves between joints and has been intermittent over several months overall. What are the possibilities?",
+    "A patient reports dizziness without clear positional pattern, hearing change, or focal neurological deficit on initial exam. What could be the cause?",
     # General medical Q&A — model also tends to hedge / discuss.
-    "Explain how aspirin works as an antiplatelet agent.",
-    "Describe the stages of wound healing.",
-    "What is the function of the renin-angiotensin-aldosterone system?",
-    "How does insulin lower blood glucose?",
-    "What are the principles of antibiotic stewardship?",
-    "Describe the cardiac action potential phases.",
-    "How does the immune system distinguish self from non-self?",
-    "What is the role of surfactant in the lung?",
-    "Explain the pathophysiology of atherosclerosis.",
-    "What are the four phases of the cell cycle?",
+    "Explain how aspirin works as an antiplatelet agent at the platelet membrane and downstream signaling steps in detail.",
+    "Describe the stages of wound healing including the cells and cytokines that drive each phase from injury onward.",
+    "What is the function of the renin-angiotensin-aldosterone system in volume status and vascular tone under physiologic stress?",
+    "How does insulin lower blood glucose, including its effects on transporters in skeletal muscle and the liver in humans?",
+    "What are the principles of antibiotic stewardship in acute-care inpatient settings, including de-escalation and duration choices for clinicians?",
+    "Describe the cardiac action potential phases of a ventricular myocyte, including the ions, channels, and characteristic timing during each phase.",
+    "How does the immune system distinguish self from non-self, including the central and peripheral tolerance mechanisms involved in this overall process?",
+    "What is the role of surfactant in the lung, including its lipid composition and contribution to alveolar stability during the respiratory cycle?",
+    "Explain the pathophysiology of atherosclerosis from initial endothelial dysfunction through plaque rupture and downstream coronary or cerebrovascular events.",
+    "What are the four phases of the cell cycle, including the major checkpoints that govern progression and arrest under DNA damage stress?",
 ]
 
 
