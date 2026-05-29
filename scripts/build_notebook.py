@@ -1108,16 +1108,57 @@ CONDITIONS = (
 print(f'\\nMode = {H6_MODE} → {len(CONDITIONS)} conditions × {len(items)} questions')
 """)))
 
-cells.append(code(wrap("H6 — run all conditions (resumable)", """
-# Resumable: if `h6/<condition>.jsonl` exists, picks up from the next item.
-# Wall time per condition × question depends on reasoning chain length;
-# expect 2-4 s/q on Blackwell. DEEP mode (1273 × 3) ≈ 2-3 hr,
-# FAST mode (100 × 6) ≈ 30 min.
+cells.append(code(wrap("H6 — run all conditions (resumable, multi-GPU if available)", """
+# Wall-time estimate:
+#   single GPU H100   1273×3  ≈ 75 min
+#   4× H100 parallel  1273×3  ≈ 20 min  (each GPU sees ~318 items × 3)
+#
+# If multiple GPUs are visible we partition items round-robin and spawn
+# one worker process per GPU. Each worker loads its own model copy and
+# runs its slice through run_conditions. Main merges JSONLs.
 import time
+N_GPUS = torch.cuda.device_count() if torch.cuda.is_available() else 0
+print(f'CUDA devices visible: {N_GPUS}')
+
 t0 = time.time()
-all_results = run_conditions(
-    lm, items, CONDITIONS, out_dir=H6_RESULTS, save_every=25,
-)
+if N_GPUS > 1:
+    # Multi-GPU data parallelism. Conditions are passed as JSON specs so each
+    # worker can rebuild its own factories using its own lm.layers.
+    from src.parallel import run_conditions_parallel
+    condition_specs = {'baseline': None}
+    condition_specs['h1_gate_anchor'] = dict(
+        type='anchor', layer=L_star, neuron=N_star,
+        m_star=float(m_star), d=float(anchor_d), k=1.0,
+    )
+    condition_specs['h5_ablate_overconf'] = dict(
+        type='ablate', neurons=top_overconf,
+    )
+    # If you flipped H6_MODE to 'FAST' (all 6 conds) include those too:
+    if H6_MODE == 'FAST':
+        condition_specs['h3_zero_layer']      = dict(type='zero_mlp', layers=[int(critical)])
+        condition_specs['h4_ablate_halluc']   = dict(type='ablate', neurons=top_halluc)
+        condition_specs['h4_h5_combined']     = dict(type='ablate', neurons=combined)
+    run_conditions_parallel(
+        model_name=MODEL_NAME, items=items, condition_specs=condition_specs,
+        out_dir=H6_RESULTS, n_gpus=N_GPUS, token=os.environ.get('HF_TOKEN'),
+        quantize_4bit=USE_4BIT,
+    )
+    # Re-build all_results from the merged jsonls so downstream cells work.
+    from src.healthbench import BenchmarkRow
+    all_results = {}
+    for cond in condition_specs:
+        rows = []
+        path = H6_RESULTS / f'{cond}.jsonl'
+        if path.exists():
+            for line in path.read_text().splitlines():
+                if line.strip():
+                    rows.append(BenchmarkRow(**json.loads(line)))
+        all_results[cond] = rows
+    CONDITIONS = condition_specs   # so downstream cells iterate the right keys
+else:
+    all_results = run_conditions(
+        lm, items, CONDITIONS, out_dir=H6_RESULTS, save_every=25,
+    )
 print(f'\\nDone in {(time.time() - t0)/60:.1f} min')
 
 import json
