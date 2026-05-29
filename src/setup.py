@@ -217,13 +217,17 @@ def smart_load_model(plan: Optional[Dict[str, Any]] = None) -> Tuple[Any, str]:
     candidates = [plan["model"]]
     token = os.environ.get("HF_TOKEN")
 
-    def _attempt():
-        return load_first_available(
+    def _attempt(quantize: Optional[bool] = None, force_single_gpu: bool = False):
+        kw = dict(
             candidates=candidates,
             token=token,
-            quantize_4bit=bool(plan["use_4bit"]),
+            quantize_4bit=plan["use_4bit"] if quantize is None else quantize,
             max_memory=plan.get("max_memory"),
         )
+        if force_single_gpu:
+            kw["max_memory"] = None
+            kw["device_map"] = "cuda:0"
+        return load_first_available(**kw)
 
     def _full_cuda_reset():
         if not torch.cuda.is_available():
@@ -239,19 +243,48 @@ def smart_load_model(plan: Optional[Dict[str, Any]] = None) -> Tuple[Any, str]:
         except Exception:
             pass
 
-    try:
-        lm, name = _attempt()
-    except RuntimeError as e:
+    def _is_recoverable(e: Exception) -> bool:
         msg = str(e).lower()
-        if any(s in msg for s in (
+        return any(s in msg for s in (
             "busy or unavailable", "cublas_status_alloc_failed",
             "cuda error", "automatic conversion of the weights",
-        )):
-            print(f"Load failed ({type(e).__name__}); resetting CUDA + retrying once.")
+            "dispatched on the cpu or the disk",
+        ))
+
+    # Ladder of attempts: reset and retry, then drop to bf16 on a single GPU,
+    # then drop to a smaller model. Each step is logged.
+    lm = name = None
+    last_exc: Optional[Exception] = None
+    for attempt_label, kw in [
+        ("primary",                      dict()),
+        ("retry after CUDA reset",       dict()),  # same args, after reset
+        ("bf16 single-GPU",              dict(quantize=False, force_single_gpu=True)),
+        ("NF4 single-GPU",               dict(quantize=True,  force_single_gpu=True)),
+    ]:
+        try:
+            print(f"\n[smart_load] attempt: {attempt_label}")
+            if attempt_label == "retry after CUDA reset":
+                _full_cuda_reset()
+            lm, name = _attempt(**kw)
+            break
+        except (RuntimeError, ValueError) as e:
+            last_exc = e
+            print(f"  → failed: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
+            if not _is_recoverable(e):
+                raise
+    if lm is None:
+        # Last resort: drop one model size and retry.
+        smaller = {"Qwen/Qwen3-32B": "Qwen/Qwen3-14B",
+                    "Qwen/Qwen3-14B": "Qwen/Qwen3-8B",
+                    "Qwen/Qwen3-8B":  "Qwen/Qwen3-4B"}.get(plan["model"])
+        if smaller:
+            print(f"\n[smart_load] all attempts on {plan['model']} failed; "
+                   f"falling back to {smaller}")
             _full_cuda_reset()
-            lm, name = _attempt()
+            candidates = [smaller]
+            lm, name = _attempt(quantize=True, force_single_gpu=True)
         else:
-            raise
+            raise last_exc or RuntimeError("smart_load_model: no candidates succeeded")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
