@@ -140,18 +140,35 @@ print('Results:', RESULTS)
 
 cells.append(code(wrap("HF login (optional — only for gated models)", """
 import os
-# Qwen3 is open-weights and needs NO token. HF_TOKEN is only required if you
-# override to a gated model (Med42, etc.). We silently try a Colab secret and
-# move on if it isn't there.
-if not os.environ.get('HF_TOKEN'):
+# Qwen3 is open-weights and needs NO token. HF_TOKEN is only needed if you
+# override to a gated model (Med42, etc.). Resolution order:
+#   1. env var HF_TOKEN
+#   2. Colab secret HF_TOKEN
+#   3. interactive notebook_login() widget (paste a token; you can also
+#      just leave it blank and skip — Qwen path won't care)
+def _resolve_hf_token():
+    if os.environ.get('HF_TOKEN'):
+        print('HF_TOKEN already set in env.')
+        return
     try:
         from google.colab import userdata
-        os.environ['HF_TOKEN'] = userdata.get('HF_TOKEN')
-        print('HF_TOKEN loaded from Colab secret.')
+        tok = userdata.get('HF_TOKEN')
+        if tok:
+            os.environ['HF_TOKEN'] = tok
+            print('HF_TOKEN loaded from Colab secret.')
+            return
     except Exception:
-        print('HF_TOKEN secret not set — skipping HF login (fine for Qwen).')
-else:
-    print('HF_TOKEN already set in env.')
+        pass
+    print('No HF_TOKEN in env or Colab secrets.')
+    print('Qwen3 is open-weights → safe to skip the widget below.')
+    print('Only required if you set MODEL_OVERRIDE to a gated model (Med42).')
+    try:
+        from huggingface_hub import notebook_login
+        notebook_login()   # shows a token-paste widget; non-blocking
+    except Exception as e:
+        print(f'(notebook_login unavailable: {e}; continuing without token.)')
+
+_resolve_hf_token()
 """)))
 
 cells.append(md(
