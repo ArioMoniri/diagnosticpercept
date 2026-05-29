@@ -24,22 +24,38 @@ This guide covers two run modes:
 
 Console → **Vertex AI → Colab Enterprise → Runtime templates → Create**.
 
-Recommended config for this project:
+Pick **ONE** of these three configs based on quota:
 
-| field | value |
-|---|---|
-| Display name | `diagnostic-percept-a100` |
-| Region | a region with A100 quota (e.g. `us-central1`) |
-| Machine type | `a2-highgpu-1g` (12 vCPU, 85 GB RAM, 1× A100 40 GB) |
-| GPU | NVIDIA A100 40 GB ×1 |
-| Disk | 200 GB pd-balanced |
-| Idle shutdown | enable, **24 h** (the slider goes up to 14 days) |
-| Network | default VPC + auto-subnet, public internet egress ON |
-| Image | the default `colab-enterprise-vertex-ai` image is fine |
-| Encryption | Google-managed key |
+| field | 🥇 H100 80GB | 🥈 A100 80GB | (fallback) A100 40GB |
+|---|---|---|---|
+| Display name | `diagnostic-percept-h100` | `diagnostic-percept-a100-80g` | `diagnostic-percept-a100-40g` |
+| Machine type | **`a3-highgpu-1g`** | **`a2-ultragpu-1g`** | `a2-highgpu-1g` |
+| GPU | NVIDIA H100 80 GB ×1 | NVIDIA A100 80 GB ×1 | NVIDIA A100 40 GB ×1 |
+| Wall time (full sweep) | ~1.6 hr | ~1.8 hr | ~2.4 hr |
+| Approx cost/hr | ~$11.06 | ~$5.05 | ~$3.67 |
+| H1 backward fits Qwen3.5-27B? | ✅ bf16 | ✅ NF4 | ❌ (auto-drops to 9B) |
+| Disk | 300 GB pd-ssd | 300 GB pd-ssd | 200 GB pd-balanced |
+| Idle shutdown | 4 h | 4 h | 4 h |
+| Internet egress | ON | ON | ON |
+| Env vars | `GH_TOKEN=ghp_...` | `GH_TOKEN=ghp_...` | `GH_TOKEN=ghp_...` |
 
-If you have H100 quota, swap machine to `a3-highgpu-1g` (1× H100 80 GB)
-— that drops the full 1273-q H6 sweep to ~45 min wall.
+Note: **do not pick `a2-highgpu-1g` again** (it's the 40 GB A100 — works
+but the notebook will auto-drop to Qwen3.5-9B because the 27B backward is
+too tight). The notebook auto-detects GPU memory and:
+- ≥ 70 GB → uses Qwen3.5-27B at bf16 (best capability)
+- 36–70 GB → uses Qwen3.5-9B at NF4 (safe for H1 backward)
+- < 36 GB → uses Qwen3.5-4B
+
+so you don't have to set `MODEL_OVERRIDE` manually.
+
+### A1b. Check quota first
+
+Console search → **Quotas** → filter by:
+- `NVIDIA_H100_GPUS` (option A)
+- `NVIDIA_A100_80GB_GPUS` (option B)
+
+If 0 in your region, click *Request adjustment* — usually approved
+within minutes for these GPU families.
 
 ### A2. Create a runtime from the template
 

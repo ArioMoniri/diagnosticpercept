@@ -136,12 +136,35 @@ print('Torch :', torch.__version__)
 print('CUDA  :', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu only')
 if torch.cuda.is_available():
     gpu_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-    print(f'Memory: {{gpu_gb:.1f}} GB')
-    # H1 discovery does forward+backward on the full prompt; Qwen3.5-27B in
-    # NF4 can spike to ~40 GB on the backward pass and OOM on A100 40 GB.
-    if gpu_gb < 48 and not os.environ.get('MODEL_OVERRIDE'):
-        print('!! NOTE: A100 40 GB is tight for H1 backward on a 27B model.')
-        print('!! For safe H1, set MODEL_OVERRIDE="Qwen/Qwen3.5-9B" (still capable, ~5 GB NF4).')
+    gpu_name = torch.cuda.get_device_name(0)
+    print(f'GPU: {{gpu_name}}  | Memory: {{gpu_gb:.1f}} GB')
+
+    # ---------- Auto-pick model based on GPU class ----------
+    # Backwards-pass memory budget: weights * (1 + 1.5 grad-overhead) + KV +
+    # activations. NF4 weights are ~50% of bf16. Empirical headroom:
+    #   - 80 GB+  → Qwen3.5-27B in bf16 (best capability, no quant artifacts)
+    #   - 40 GB   → Qwen3.5-9B safe for H1 backward; 27B at NF4 may OOM
+    #   - 16 GB   → Qwen3.5-4B
+    if not os.environ.get('MODEL_OVERRIDE'):
+        if gpu_gb >= 70:
+            recommended = 'Qwen/Qwen3.5-27B'   # bf16 fits
+            os.environ['USE_4BIT'] = '0'
+        elif gpu_gb >= 36:
+            recommended = 'Qwen/Qwen3.5-9B'    # safe for H1 backward
+        else:
+            recommended = 'Qwen/Qwen3.5-4B'
+        os.environ['MODEL_OVERRIDE'] = recommended
+        print(f'>>> AUTO-PICK: MODEL_OVERRIDE={{recommended}}')
+        print('    (override by setting MODEL_OVERRIDE before this cell)')
+
+    # ---------- Adaptive N_BENCH ----------
+    if gpu_gb >= 70:
+        os.environ.setdefault('N_BENCH', '1273')   # full MedQA test set
+    elif gpu_gb >= 36:
+        os.environ.setdefault('N_BENCH', '600')
+    else:
+        os.environ.setdefault('N_BENCH', '300')
+    print(f'    Adaptive N_BENCH={{os.environ["N_BENCH"]}}')
 
 # Disk sanity. Colab Enterprise's boot disk is ~94 GB and starts ~90% full
 # (system image). /content is the 195 GB workspace where caches go.
@@ -182,6 +205,36 @@ if repo_path not in sys.path:
 RESULTS = Path('/content/results'); RESULTS.mkdir(parents=True, exist_ok=True)
 print('Repo   :', repo_path)
 print('Results:', RESULTS)
+""")))
+
+cells.append(code(wrap("preflight — print the run plan", """
+# Single-glance summary of what's about to happen so you can abort before
+# downloading 14 GB of model weights if anything is wrong.
+print('=' * 62)
+print(f'  Runtime       : {RUNTIME}')
+print(f'  GPU           : {"none" if not torch.cuda.is_available() else torch.cuda.get_device_name(0)}  ({"-" if not torch.cuda.is_available() else f"{torch.cuda.get_device_properties(0).total_memory/1e9:.0f} GB"})')
+print(f'  Model         : {os.environ.get("MODEL_OVERRIDE", "(auto-pick from chain)")}')
+print(f'  Quantize 4bit : {os.environ.get("USE_4BIT", "auto")}')
+print(f'  N_BENCH       : {os.environ.get("N_BENCH", "default")}')
+print(f'  HF cache      : {os.environ.get("HF_HOME", "(default ~/.cache)")}')
+print()
+print('  Estimated wall time on this GPU (rough):')
+_gpu_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if torch.cuda.is_available() else 0
+if _gpu_gb >= 70:
+    print('    H1 discover           ~5 min')
+    print('    H6 deep (1273×3)      ~75 min')
+    print('    H7 (300 items)        ~3 min')
+    print('    H8 + sycophancy       ~15 min')
+    print('    --- TOTAL             ~1.6 hr')
+elif _gpu_gb >= 36:
+    print('    H1 discover           ~10 min')
+    print('    H6 deep (600×3)       ~110 min')
+    print('    H7 (300 items)        ~6 min')
+    print('    H8 + sycophancy       ~20 min')
+    print('    --- TOTAL             ~2.4 hr')
+else:
+    print('    Conservative budget on small GPU — expect ~3-5 hr.')
+print('=' * 62)
 """)))
 
 cells.append(code(wrap("HF login (optional — only for gated models)", """
@@ -259,7 +312,11 @@ if torch.cuda.is_available():
     total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
 else:
     total_gb = 0
-USE_4BIT = total_gb < 24.0
+# Honor explicit USE_4BIT env (auto-set to 0 on 80GB+ GPUs in the env cell).
+if 'USE_4BIT' in os.environ:
+    USE_4BIT = bool(int(os.environ['USE_4BIT']))
+else:
+    USE_4BIT = total_gb < 36.0   # leave headroom for H1 backward on 40 GB
 print(f'GPU total: {total_gb:.1f} GB  |  use_4bit = {USE_4BIT}')
 
 # Default chain is QWEN-ONLY. To force a different Qwen variant set
@@ -874,12 +931,11 @@ from src.healthbench import (
 
 H6_RESULTS = RESULTS / 'h6'; H6_RESULTS.mkdir(exist_ok=True)
 
-# H6 mode selection:
-#   FAST     = 100 q × all 6 conditions  → ~30 min  (broad scan)
-#   DEEP     = 1273 q × 3 conditions     → ~3 hr    (full MedQA on the 3 informative conditions)
-# Override by setting N_BENCH / CONDITION_KEYS below.
+# H6 mode selection. Adaptive N_BENCH was set in the env-check cell based
+# on GPU memory: 1273 on H100/A100-80G, 600 on A100-40G, 300 on smaller.
+# Override by uncommenting below.
 H6_MODE = 'DEEP'  # 'FAST' or 'DEEP'
-N_BENCH = 1273 if H6_MODE == 'DEEP' else 100
+N_BENCH = int(os.environ.get('N_BENCH', '1273' if H6_MODE == 'DEEP' else '100'))
 DATASET = 'GBaker/MedQA-USMLE-4-options-hf'
 print(f'Loading {DATASET} (n={N_BENCH or "ALL"})')
 items = load_medqa(DATASET, split='test', n=N_BENCH, seed=0)
