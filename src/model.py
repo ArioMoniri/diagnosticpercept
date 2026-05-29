@@ -99,17 +99,25 @@ def _patch_mlp(mlp: nn.Module) -> None:
 
 
 # Default candidate chain — tried in order, first one that loads wins.
-# Updated May 2026: Qwen3-32B-Instruct is the largest Qwen3-Instruct on HF
-# at the time of writing, and falls back gracefully to the 14B and 8B
-# variants on smaller GPUs.
+# QWEN-ONLY by default (user explicitly asked for Qwen). To use Med42 or
+# OpenBioLLM set ``MODEL_OVERRIDE='m42-health/Llama3-Med42-8B'``.
+#
+# Qwen3 (April 2025) does NOT use the ``-Instruct`` suffix — the base
+# repository name is already the instruct variant. We also list a few
+# speculative Qwen3.5 names at the top in case they exist by the time
+# this is run; they'll be skipped silently if absent on HF.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    "Qwen/Qwen3-32B-Instruct",
-    "Qwen/Qwen3-14B-Instruct",
-    "Qwen/Qwen3-8B-Instruct",
+    # Speculative Qwen3.5 (may not exist on HF yet):
+    "Qwen/Qwen3.5-32B",
+    "Qwen/Qwen3.5-14B",
+    "Qwen/Qwen3.5-8B",
+    # Confirmed Qwen3 family:
+    "Qwen/Qwen3-32B",
+    "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
-    "m42-health/Llama3-Med42-8B",
-    "aaditya/Llama3-OpenBioLLM-8B",
+    "Qwen/Qwen3-4B",
 )
+QWEN_PREFIX = "Qwen/"
 
 
 def load_first_available(

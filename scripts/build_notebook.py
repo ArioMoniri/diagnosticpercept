@@ -174,28 +174,37 @@ else:
 USE_4BIT = total_gb < 24.0
 print(f'GPU total: {total_gb:.1f} GB  |  use_4bit = {USE_4BIT}')
 
-# Try newest Qwen3 family first; fall back to Med42/OpenBioLLM if HF gating or
-# size limit hits. Override via MODEL_OVERRIDE env to force a single model.
+# Default chain is QWEN-ONLY (per user request). To load Med42 / OpenBioLLM
+# instead, set MODEL_OVERRIDE='m42-health/Llama3-Med42-8B' (gated).
 override = os.environ.get('MODEL_OVERRIDE')
 candidates = (override,) if override else DEFAULT_MODEL_CANDIDATES
 token = os.environ.get('HF_TOKEN')
+print(f'Candidate chain ({len(candidates)} entries):')
+for c in candidates: print(f'  - {c}')
 
 lm, MODEL_NAME = load_first_available(
     candidates=candidates, token=token, quantize_4bit=USE_4BIT,
 )
 
+# Loud warning if we ended up on something other than Qwen.
+if not MODEL_NAME.startswith('Qwen/'):
+    print('\\n' + '!' * 70)
+    print(f'! WARNING: loaded model is NOT a Qwen variant: {MODEL_NAME}')
+    print('! Set MODEL_OVERRIDE="" and re-run if you wanted Qwen.')
+    print('!' * 70)
+
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
     used = torch.cuda.memory_allocated() / 1e9
-    print(f'\\nLoaded: {MODEL_NAME}')
-    print(f'  layers = {lm.n_layers}')
-    print(f'  d_ff   = {lm.d_ff}')
-    print(f'  dtype  = {lm.dtype}')
-    print(f'  device = {lm.device}')
-    print(f'  VRAM used after load: {used:.2f} GB')
+    print(f'\\n>>> Loaded: {MODEL_NAME}')
+    print(f'    layers = {lm.n_layers}')
+    print(f'    d_ff   = {lm.d_ff}')
+    print(f'    dtype  = {lm.dtype}')
+    print(f'    device = {lm.device}')
+    print(f'    VRAM used after load: {used:.2f} GB')
 else:
-    print(f'\\nLoaded: {MODEL_NAME} (CPU)')
-    print(f'  layers = {lm.n_layers}  d_ff = {lm.d_ff}')
+    print(f'\\n>>> Loaded: {MODEL_NAME} (CPU)')
+    print(f'    layers = {lm.n_layers}  d_ff = {lm.d_ff}')
 """)))
 
 cells.append(code(wrap("sanity: h.retain_grad flows", """
