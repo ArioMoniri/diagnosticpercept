@@ -138,26 +138,31 @@ print('Repo   :', repo_path)
 print('Results:', RESULTS)
 """)))
 
-cells.append(code(wrap("HF login (gated Med42)", """
+cells.append(code(wrap("HF login (optional — only for gated models)", """
 import os
+# Qwen3 is open-weights and needs NO token. HF_TOKEN is only required if you
+# override to a gated model (Med42, etc.). We silently try a Colab secret and
+# move on if it isn't there.
 if not os.environ.get('HF_TOKEN'):
     try:
         from google.colab import userdata
         os.environ['HF_TOKEN'] = userdata.get('HF_TOKEN')
-        print('HF_TOKEN loaded from Colab secrets.')
-    except Exception as e:
-        print('Colab secret not available:', e)
-        from huggingface_hub import notebook_login
-        notebook_login()
+        print('HF_TOKEN loaded from Colab secret.')
+    except Exception:
+        print('HF_TOKEN secret not set — skipping HF login (fine for Qwen).')
 else:
-    print('HF_TOKEN already set.')
+    print('HF_TOKEN already set in env.')
 """)))
 
 cells.append(md(
-    "## 2. Load Med42-8B and verify hooks\n\n"
-    "Patches every MLP forward to expose `h = SiLU(W_gate x) * (W_up x)` with "
-    "`retain_grad`. Falls back to OpenBioLLM-8B if Med42's license is not yet "
-    "accepted on your HF account."
+    "## 2. Load model + verify hooks\n\n"
+    "Default chain is **Qwen-only**: tries the newest Qwen3.5 variants, then "
+    "Qwen3-32B → 14B → 8B → 4B. The first that fits VRAM (with NF4 4-bit "
+    "below 24 GB) wins. Patches every MLP forward to expose "
+    "`h = SiLU(W_gate x) * (W_up x)` with `retain_grad`.\n\n"
+    "*To force a different model* (e.g. Med42 for comparison): set "
+    "`os.environ['MODEL_OVERRIDE'] = 'm42-health/Llama3-Med42-8B'` "
+    "**before** running this cell — that path needs `HF_TOKEN` because Med42 is gated."
 ))
 
 cells.append(code(wrap("load model", """
