@@ -299,7 +299,7 @@ def _letter_token_ids(tokenizer, letters: Sequence[str]) -> Dict[str, int]:
 _ANSWER_END_RE = re.compile(r"answer\s*[:\-]\s*$", re.IGNORECASE | re.DOTALL)
 
 
-def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: int = 400) -> Optional[int]:
+def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: int = 800) -> Optional[int]:
     """Locate the position (in ``generated_ids``) whose logit distribution
     *chose the answer letter* — i.e. the token immediately after "Answer:".
 
@@ -332,7 +332,7 @@ def run_one(
     item: MCQItem,
     condition: str,
     intervention_ctx=None,
-    max_new_tokens: int = 220,
+    max_new_tokens: int = 512,
 ) -> BenchmarkRow:
     """One forward+generate under a single intervention context.
 

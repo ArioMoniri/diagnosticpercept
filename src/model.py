@@ -107,24 +107,14 @@ def _patch_mlp(mlp: nn.Module) -> None:
 # pattern; non-existent repos just print "not on HF, skipping" and we
 # proceed to the next.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    # Qwen3-Next (post-Qwen3 line; MoE variants):
-    "Qwen/Qwen3-Next-80B-A3B-Instruct",
-    "Qwen/Qwen3-Next-80B-A3B",
-    "Qwen/Qwen3-Next-32B-Instruct",
-    "Qwen/Qwen3-Next-32B",
-    # Qwen3.5 — both naming conventions, full size ladder:
-    "Qwen/Qwen3.5-235B-A22B-Instruct",
-    "Qwen/Qwen3.5-72B-Instruct",
-    "Qwen/Qwen3.5-72B",
-    "Qwen/Qwen3.5-32B-Instruct",
-    "Qwen/Qwen3.5-32B",
-    "Qwen/Qwen3.5-14B-Instruct",
-    "Qwen/Qwen3.5-14B",
-    "Qwen/Qwen3.5-8B-Instruct",
-    "Qwen/Qwen3.5-8B",
-    "Qwen/Qwen3.5-7B-Instruct",
-    "Qwen/Qwen3.5-7B",
-    # Qwen3 (April 2025) — confirmed live fallbacks:
+    # Qwen3.5 (May 2026, verified on huggingface.co/Qwen): natively
+    # multimodal foundation, 3:1 Gated DeltaNet / Gated Attention hybrid,
+    # thinking mode on by default. Bare name = instruct variant.
+    # 27B is the largest dense variant that fits a single A100 at NF4.
+    "Qwen/Qwen3.5-27B",
+    "Qwen/Qwen3.5-9B",
+    "Qwen/Qwen3.5-4B",
+    # Qwen3 (April 2025) deeper fallbacks if a Qwen3.5 size can't fit:
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",

@@ -106,7 +106,7 @@ class SycophancyCase:
 @torch.no_grad()
 def _generate_and_parse(
     lm: LoadedModel, prompt: str, valid_letters: Sequence[str],
-    letter_token_ids: Dict[str, int], max_new_tokens: int = 220,
+    letter_token_ids: Dict[str, int], max_new_tokens: int = 512,
 ) -> Tuple[Optional[str], float, str]:
     """Generate, find Answer-position, return (predicted letter, p_top1, raw)."""
     tok = lm.tokenizer
