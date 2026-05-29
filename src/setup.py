@@ -122,14 +122,21 @@ def auto_pick() -> Dict[str, Any]:
         plan["use_4bit"] = gb < 48.0
 
     if "MODEL_OVERRIDE" not in os.environ:
+        # Qwen3.5/3.6 use a hybrid Gated DeltaNet + Gated Attention arch with
+        # multi-token prediction and an integrated vision tower. The checkpoint
+        # layer layout (linear_attn.in_proj_qkv, mtp.layers, model.visual.*) is
+        # incompatible with what transformers' Qwen3_5ForCausalLM tries to
+        # load — most weights end up MISSING/UNEXPECTED. Until transformers
+        # ships a Qwen3.5/3.6-specific causal class, default to Qwen3 which
+        # loads cleanly on standard transformers everywhere.
         if gb >= 70:
-            plan["model"] = "Qwen/Qwen3.6-27B"
-        elif gb >= 36:
-            plan["model"] = "Qwen/Qwen3.6-27B"  # NF4 fits A100-40
+            plan["model"] = "Qwen/Qwen3-32B"   # bf16 ~64 GB, fits one A100-80
+        elif gb >= 24:
+            plan["model"] = "Qwen/Qwen3-14B"   # bf16 ~28 GB, fits A100-40
         elif gb >= 12:
-            plan["model"] = "Qwen/Qwen3.5-9B"
+            plan["model"] = "Qwen/Qwen3-8B"
         else:
-            plan["model"] = "Qwen/Qwen3.5-4B"
+            plan["model"] = "Qwen/Qwen3-4B"
 
     # max_memory ONLY when bf16 needs spreading (multi-GPU, large model).
     # When NF4, the model is ~14 GB — fits one GPU; spreading just adds
@@ -204,18 +211,30 @@ def smart_load_model(plan: Optional[Dict[str, Any]] = None) -> Tuple[Any, str]:
             max_memory=plan.get("max_memory"),
         )
 
+    def _full_cuda_reset():
+        if not torch.cuda.is_available():
+            return
+        import gc
+        for _ in range(3):
+            gc.collect()
+            torch.cuda.empty_cache()
+        # Reset peak stats — purely cosmetic but signals a clean slate.
+        try:
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.reset_peak_memory_stats(i)
+        except Exception:
+            pass
+
     try:
         lm, name = _attempt()
     except RuntimeError as e:
         msg = str(e).lower()
-        if "busy or unavailable" in msg or "cublas_status_alloc_failed" in msg:
-            print("CUDA busy/alloc-failed — clearing cache and retrying once ...")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                # If the previous attempt's tensors are still ref-held by an
-                # exception object, gc them.
-                import gc; gc.collect()
-                torch.cuda.empty_cache()
+        if any(s in msg for s in (
+            "busy or unavailable", "cublas_status_alloc_failed",
+            "cuda error", "automatic conversion of the weights",
+        )):
+            print(f"Load failed ({type(e).__name__}); resetting CUDA + retrying once.")
+            _full_cuda_reset()
             lm, name = _attempt()
         else:
             raise

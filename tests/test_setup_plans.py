@@ -40,14 +40,16 @@ def _clean_env(monkeypatch):
 
 
 def test_4x_a100_40gb_picks_nf4_no_max_memory():
-    """4× A100 40GB → NF4 27B, no max_memory (model fits one GPU)."""
+    """4× A100 40GB → NF4 14B, no max_memory (model fits one GPU)."""
     with _mock_torch(4, 42.4, "NVIDIA A100-SXM4-40GB"):
         plan = auto_pick()
     assert plan["use_4bit"] is True, "A100 40GB must use NF4"
     assert plan["max_memory"] is None, (
         "NF4 model fits one GPU; spreading would just add overhead"
     )
-    assert plan["model"] == "Qwen/Qwen3.6-27B"
+    assert plan["model"] == "Qwen/Qwen3-14B", (
+        "Qwen3.5/3.6 don't load on standard transformers — default to Qwen3"
+    )
     assert plan["n_bench"] == 1273
 
 
@@ -85,11 +87,11 @@ def test_1x_a100_40gb_picks_nf4():
 
 
 def test_1x_t4_picks_smaller_model():
-    """T4 16GB: too small even for 9B; falls to 4B-class."""
+    """T4 16GB: too small for 14B; falls to 8B-class."""
     with _mock_torch(1, 14.6):
         plan = auto_pick()
     assert plan["use_4bit"] is True
-    assert plan["model"] == "Qwen/Qwen3.5-9B"
+    assert plan["model"] == "Qwen/Qwen3-8B"
     assert plan["n_bench"] == 600
 
 
