@@ -27,7 +27,7 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 
 from .healthbench import (
-    MCQItem, _find_answer_token_pos, _letter_token_ids, render_prompt,
+    MCQItem, find_answer_token_pos, _letter_token_ids, render_prompt,
 )
 from .model import LoadedModel, clear_h
 
@@ -78,7 +78,7 @@ def collect_answer_position_acts(
         clear_h(lm.layers)
 
         generated_ids = gen.sequences[0, enc.input_ids.shape[1]:]
-        ans_pos = _find_answer_token_pos(tok, generated_ids)
+        ans_pos = find_answer_token_pos(tok, generated_ids)
         if ans_pos is None:
             # Skip questions where the model didn't honor the format —
             # we can't measure calibration at a position that doesn't exist.
@@ -314,17 +314,50 @@ def _rank_length_binned(
     if not all_r:
         return []
 
-    # Treat each (L, neuron) as a single Pearson r at the smallest bin's N.
-    n_min = min(
-        int((bin_idx == b).sum().item())
-        for b in range(n_bins)
-        if int((bin_idx == b).sum().item()) >= 3
-    )
-    r_tensor = torch.tensor(all_r)
-    p_tensor = _pearson_r_pvalue(r_tensor, n_min)
+    # iter-6 (ml-developer): the previous single-r t-test at n_min was
+    # statistically invalid — the mean of correlations isn't itself a Pearson
+    # r. Replace with Fisher-z aggregation across bins, which is the standard
+    # meta-analytic combiner for r when within-bin samples are independent:
+    #   z_b = atanh(r_b);  z̄ = Σ w_b z_b / Σ w_b,  w_b = n_b − 3
+    #   test stat  Z = z̄ · sqrt(Σ w_b)  ~  N(0, 1) under H0: r = 0 in every bin
+    # We rebuild per-(layer, neuron) p-values from this Z so BH-FDR is valid.
+    import math
+
+    # Per-bin n and weights.
+    bin_ns = [int((bin_idx == b).sum().item()) for b in range(n_bins)]
+    bin_ws = [(n_b - 3) for n_b in bin_ns if n_b >= 4]
+    if not bin_ws or sum(bin_ws) <= 0:
+        print(f"[H7 length-binned] insufficient per-bin N for Fisher-z; "
+              f"bin sizes={bin_ns}. Returning empty.")
+        return []
+    w_sum = float(sum(bin_ws))
+
+    # Recompute z̄ per (L, n) from the per-bin r list rather than the mean r.
+    p_list: List[float] = []
+    z_list: List[float] = []
+    for (L, n_idx) in zip(all_layer, all_neuron):
+        rs = bin_rs[L][n_idx]
+        rs_clamped = [max(-0.9999, min(0.9999, r)) for r in rs]
+        if len(rs_clamped) != len(bin_ws):
+            # A bin was skipped earlier (n_b<3); align weights to the kept rs.
+            usable_ns = [n_b for n_b in bin_ns if n_b >= 4]
+            ws = [n_b - 3 for n_b in usable_ns[: len(rs_clamped)]]
+        else:
+            ws = bin_ws
+        if not ws or sum(ws) <= 0:
+            p_list.append(1.0); z_list.append(0.0); continue
+        z_bar = sum(w * math.atanh(r) for w, r in zip(ws, rs_clamped)) / sum(ws)
+        Z = z_bar * math.sqrt(sum(ws))
+        # Two-sided normal p-value.
+        p = math.erfc(abs(Z) / math.sqrt(2.0))
+        p_list.append(p)
+        z_list.append(z_bar)
+
+    p_tensor = torch.tensor(p_list, dtype=torch.float32)
     pass_mask = _bh_fdr(p_tensor, q=fdr_q)
-    print(f"H7 length-binned + FDR: {int(pass_mask.sum())}/{len(all_r)} neurons "
-          f"pass q={fdr_q} after {n_bins}-bin length stratification (n_min={n_min})")
+    print(f"H7 length-binned + Fisher-z + FDR: {int(pass_mask.sum())}/{len(all_r)} "
+          f"neurons pass q={fdr_q} after {n_bins}-bin length stratification "
+          f"(bin sizes={bin_ns}, Σw={w_sum:.0f})")
 
     n_total = len(rows_with_len)
     # Diagnostic mean acts use overall (not within-bin) high/low miscal subsets.

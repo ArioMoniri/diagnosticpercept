@@ -44,7 +44,7 @@ from tqdm.auto import tqdm
 
 from .calibration import CONFIDENT_TOKENS, UNSURE_TOKENS, _gather_token_ids
 from .healthbench import (
-    MCQItem, _find_answer_token_pos, _letter_token_ids, render_prompt,
+    MCQItem, find_answer_token_pos, _letter_token_ids, render_prompt,
 )
 from .model import LoadedModel, clear_h
 
@@ -128,7 +128,7 @@ def collect_xtask(
         clear_h(lm.layers)
 
         gen_ids = gen.sequences[0, enc.input_ids.shape[1]:]
-        ans_pos = _find_answer_token_pos(tok, gen_ids)
+        ans_pos = find_answer_token_pos(tok, gen_ids)
         if ans_pos is None:
             continue
         ans_probs = F.softmax(gen.scores[ans_pos][0].float(), dim=-1)

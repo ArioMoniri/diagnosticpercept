@@ -108,6 +108,7 @@ def _worker_main(
     out_dir: str,
     token: Optional[str],
     quantize_4bit: bool,
+    prompt_template: Optional[str] = None,
 ) -> None:
     """One worker process. Loads model on its assigned GPU, runs items."""
     # Restrict this process to its own GPU. CUDA_VISIBLE_DEVICES must be set
@@ -138,7 +139,8 @@ def _worker_main(
     print(f"[worker {rank}] running {len(items)} items × {len(conditions)} conditions")
 
     t0 = time.time()
-    run_conditions(lm, items, conditions, out_dir=worker_out)
+    run_conditions(lm, items, conditions, out_dir=worker_out,
+                   prompt_template=prompt_template)
     print(f"[worker {rank}] done in {(time.time() - t0)/60:.1f} min")
 
 
@@ -170,17 +172,23 @@ def run_conditions_parallel(
     n_gpus: Optional[int] = None,
     token: Optional[str] = None,
     quantize_4bit: bool = True,
+    prompt_template: Optional[str] = None,
 ) -> Path:
-    """Default ``quantize_4bit=True`` because each worker holds a full model
+    """Run ``condition_specs`` over ``items`` across ``n_gpus`` data-parallel workers.
+
+    Each worker writes ``<out_dir>/_gpu<rank>/<condition>.jsonl``; after all
+    workers finish we merge into ``<out_dir>/<condition>.jsonl``.
+
+    ``prompt_template`` (M4 wiring iter-6): forwarded to each worker's
+    :func:`healthbench.run_conditions` so the entire DP run uses the same
+    paraphrase. Run once per template to materialise the H6 ensemble; merge
+    accuracies across runs in :mod:`src.eval`.
+
+    ``quantize_4bit=True`` by default because each worker holds a full model
     copy on its own GPU; even on an 80 GB H100, the bf16 27B-class model
     (~64 GB weights) leaves only ~16 GB for reasoning-chain KV cache and
-    activations — too tight, OOM-prone on long generations.
-
-    NF4 weights (~14 GB) leave ~66 GB headroom per worker → robust."""
-    """Run condition_specs over ``items`` across ``n_gpus`` data-parallel workers.
-
-    Each worker writes ``<out_dir>/_gpu<rank>/<condition>.jsonl``. After all
-    workers finish we merge into ``<out_dir>/<condition>.jsonl``.
+    activations — too tight, OOM-prone on long generations. NF4 weights
+    (~14 GB) leave ~66 GB headroom per worker → robust.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -199,7 +207,7 @@ def run_conditions_parallel(
         p = ctx.Process(
             target=_worker_main,
             args=(rank, chunks_json[rank], condition_specs, model_name,
-                  str(out_dir), token, quantize_4bit),
+                  str(out_dir), token, quantize_4bit, prompt_template),
         )
         p.start()
         procs.append(p)

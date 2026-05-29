@@ -114,10 +114,13 @@ def cmd_replay(args: argparse.Namespace) -> None:
     src = Path(args.path)
     if not src.exists():
         raise SystemExit(f"no such file: {src}")
-    spec = json.loads(src.read_text())
-    # If we're replaying a log, strip log-only fields.
-    for k in ("stdout", "stderr", "result", "traceback", "task_id"):
-        spec.pop(k, None)
+    raw = json.loads(src.read_text())
+    # iter-6 (ml-developer review): switched from denylist to allowlist so
+    # future bridge-log fields can't pollute the replayed task spec.
+    _SPEC_FIELDS = {"kind", "code", "module", "function", "args", "needs", "save"}
+    spec = {k: v for k, v in raw.items() if k in _SPEC_FIELDS}
+    if "kind" not in spec:
+        raise SystemExit(f"{src} has no `kind` field — not a valid bridge spec.")
     label = args.label or src.stem.split("-", 2)[-1]
     _write_task(spec, label=label, dry_run=args.dry_run)
 

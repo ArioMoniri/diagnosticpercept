@@ -613,6 +613,7 @@ def run_conditions(
     conditions: Dict[str, Optional[Callable[[], Any]]],
     out_dir: Path,
     save_every: int = 25,
+    prompt_template: Optional[str] = None,
 ) -> Dict[str, List[BenchmarkRow]]:
     """Run ``items`` under each named condition; persist after every ``save_every``.
 
@@ -620,6 +621,11 @@ def run_conditions(
     returns a fresh context manager when called. The factory pattern lets us
     re-enter the same intervention spec for every question without recycling
     a closed CM.
+
+    ``prompt_template`` (M4 wiring iter-6): if set, every ``run_one`` uses
+    this paraphrase from :data:`_PROMPT_TEMPLATE_ENSEMBLE`; ``None`` keeps
+    the canonical prompt. Callers running an ensemble loop should call
+    ``run_conditions(..., prompt_template=tpl)`` per template and merge.
     """
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     all_results: Dict[str, List[BenchmarkRow]] = {}
@@ -641,7 +647,8 @@ def run_conditions(
 
         for i, item in enumerate(tqdm(items[already:], desc=cond_name, leave=False)):
             ctx = factory() if factory is not None else None
-            row = run_one(lm, item, cond_name, intervention_ctx=ctx)
+            row = run_one(lm, item, cond_name, intervention_ctx=ctx,
+                          prompt_template=prompt_template)
             results.append(row)
             with jsonl_path.open("a") as f:
                 f.write(json.dumps(asdict(row)) + "\n")

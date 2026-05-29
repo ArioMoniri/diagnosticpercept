@@ -252,6 +252,7 @@ def find_overconfidence_neurons_at_scale(
     top_k: int = 20,
     fdr_q: float = 0.05,
     max_new_tokens: int = 220,
+    length_binned: bool = True,
 ):
     """H5 at MedQA scale (N ≥ 200) via the H7 calibration signal.
 
@@ -287,4 +288,8 @@ def find_overconfidence_neurons_at_scale(
             f"H5-at-scale: only {len(rows)} questions yielded a parseable "
             "answer position — model likely isn't honoring the prompt format."
         )
-    return rows, rank_miscalibration_neurons(rows, acts, top_k=top_k, fdr_q=fdr_q)
+    # iter-6: forward `length_binned` so H5-at-scale gets M7 stratification by
+    # default — without this, chain-length confounds bleed into the Pearson r.
+    return rows, rank_miscalibration_neurons(
+        rows, acts, top_k=top_k, fdr_q=fdr_q, length_binned=length_binned,
+    )

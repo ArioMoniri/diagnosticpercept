@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,17 +108,40 @@ class ActCache:
 
     def set(self, key: CacheKey, layers: Dict[int, torch.Tensor]) -> None:
         h = key.hashed()
-        path = self.root / "act" / f"{h}.pt"
+        final_path = self.root / "act" / f"{h}.pt"
         # Detach + CPU to make the cache portable across worker processes.
         layers_cpu = {int(L): v.detach().to(dtype=torch.float16, device="cpu")
                       for L, v in layers.items()}
-        torch.save(layers_cpu, path)
+        # Atomic write: serialise to a tempfile in the same dir then
+        # `os.replace` — a concurrent reader either sees the previous file
+        # or the new one, never a partially-flushed `.pt`. The whole disk
+        # write + manifest update is done inside the lock so two threads
+        # writing the same key don't interleave (last-writer-wins) and
+        # the manifest never references a missing tempfile. Fixes the
+        # critical race flagged in 2026-05-29 ml-developer review iter-6.
         with self._lock:
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=f"{h}.", suffix=".pt.tmp", dir=str(final_path.parent),
+            )
+            os.close(fd)
+            try:
+                torch.save(layers_cpu, tmp_path)
+                os.replace(tmp_path, final_path)
+            except Exception:
+                # Best-effort cleanup of orphan tempfile on serialize failure.
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
             self._manifest[h] = {
                 "q_id": key.q_id, "condition": key.condition,
                 "where": key.where, "layers": sorted(layers_cpu.keys()),
             }
-            self._manifest_path.write_text(json.dumps(self._manifest, indent=2))
+            # Atomic manifest write too: tempfile + replace.
+            manifest_tmp = self._manifest_path.with_suffix(".json.tmp")
+            manifest_tmp.write_text(json.dumps(self._manifest, indent=2))
+            os.replace(manifest_tmp, self._manifest_path)
             if self.in_memory:
                 self._mem[h] = layers_cpu
 

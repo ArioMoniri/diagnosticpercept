@@ -35,8 +35,20 @@ _COMMITMENT_LETTER_RE = re.compile(
     r"(?:the\s+answer\s+is|therefore[, ]+|so\s+i\s+(?:would\s+)?(?:pick|choose|go\s+with)|"
     r"best\s+(?:answer|choice|option)\s+is|i\s+(?:would\s+)?(?:pick|choose|select|go\s+with)|"
     r"(?:my\s+)?diagnosis\s+is|the\s+correct\s+answer\s+is|"
-    r"most\s+likely(?:\s+answer)?\s+is)"
+    r"most\s+likely(?:\s+answer)?\s+is|my\s+pick\s+is|answer\s*=\s*)"
     r"\s*\(?([A-E])\)?\b",
+    re.IGNORECASE,
+)
+
+# iter-6: post-letter commitment phrasings — "D is the correct answer",
+# "D is the best choice", "D is my diagnosis", etc. Matches a letter
+# followed by the predicate, with the *first* alternation group capturing
+# the letter (post-form). Used as a secondary scan when prefix-form misses.
+_COMMITMENT_LETTER_POST_RE = re.compile(
+    r"\b\(?([A-E])\)?\s+(?:is\s+(?:the\s+)?"
+    r"(?:correct|best|right|final|most\s+likely)\s*"
+    r"(?:answer|choice|option|diagnosis)|"
+    r"is\s+my\s+(?:answer|choice|pick|diagnosis))\b",
     re.IGNORECASE,
 )
 
@@ -54,11 +66,21 @@ def implied_letter(reasoning: str, valid_letters: Sequence[str]) -> Optional[str
     """
     valid = {v.upper() for v in valid_letters}
 
-    # 1. Commitment-phrase match (preferred).
-    matches = [m.group(1).upper() for m in _COMMITMENT_LETTER_RE.finditer(reasoning)]
-    matches = [L for L in matches if L in valid]
-    if matches:
-        return matches[-1]
+    # 1. Commitment-phrase match (preferred). Combine prefix-form and
+    # post-form regexes and take the *last* hit by string position so
+    # late-chain commitments override earlier hedging.
+    hits: List = []  # list of (start_pos, letter)
+    for m in _COMMITMENT_LETTER_RE.finditer(reasoning):
+        L = m.group(1).upper()
+        if L in valid:
+            hits.append((m.start(), L))
+    for m in _COMMITMENT_LETTER_POST_RE.finditer(reasoning):
+        L = m.group(1).upper()
+        if L in valid:
+            hits.append((m.start(), L))
+    if hits:
+        hits.sort(key=lambda x: x[0])
+        return hits[-1][1]
 
     # 2. Frequency fallback.
     counts: Counter = Counter()
