@@ -141,11 +141,11 @@ print('Results:', RESULTS)
 cells.append(code(wrap("HF login (optional — only for gated models)", """
 import os
 # Qwen3 is open-weights and needs NO token. HF_TOKEN is only needed if you
-# override to a gated model (Med42, etc.). Resolution order:
+# override to a gated model. Resolution order:
 #   1. env var HF_TOKEN
 #   2. Colab secret HF_TOKEN
-#   3. interactive notebook_login() widget (paste a token; you can also
-#      just leave it blank and skip — Qwen path won't care)
+#   3. interactive notebook_login() widget (may not render in all Colab
+#      runtimes — if so, use the manual paste cell that follows)
 def _resolve_hf_token():
     if os.environ.get('HF_TOKEN'):
         print('HF_TOKEN already set in env.')
@@ -160,15 +160,31 @@ def _resolve_hf_token():
     except Exception:
         pass
     print('No HF_TOKEN in env or Colab secrets.')
-    print('Qwen3 is open-weights → safe to skip the widget below.')
-    print('Only required if you set MODEL_OVERRIDE to a gated model (Med42).')
+    print('Qwen3 is open-weights so this is fine to skip for the default chain.')
     try:
+        # Enable widgets if Colab/Jupyter hasn't already.
+        from IPython.display import display
         from huggingface_hub import notebook_login
-        notebook_login()   # shows a token-paste widget; non-blocking
+        notebook_login()
+        print('Token widget rendered above ↑ (paste + Login). '
+              'If you do not see a widget, use the manual paste cell below.')
     except Exception as e:
-        print(f'(notebook_login unavailable: {e}; continuing without token.)')
+        print(f'(notebook_login unavailable: {e})')
 
 _resolve_hf_token()
+""")))
+
+# Manual paste fallback — separate cell so widget failures don't block.
+cells.append(code(wrap("HF token: manual paste fallback (skip if widget worked)", """
+# If the widget above didn't render, paste your token below between the quotes
+# and run THIS cell. Leave blank to skip.
+HF_TOKEN_PASTE = ''   # ← paste like 'hf_xxxxxxxxxxxxxxxxx', then Run cell
+
+if HF_TOKEN_PASTE.strip():
+    os.environ['HF_TOKEN'] = HF_TOKEN_PASTE.strip()
+    print(f'HF_TOKEN set manually ({len(HF_TOKEN_PASTE.strip())} chars).')
+else:
+    print('No manual token pasted. Continuing with whatever the previous cell resolved.')
 """)))
 
 cells.append(md(
@@ -177,9 +193,9 @@ cells.append(md(
     "Qwen3-32B → 14B → 8B → 4B. The first that fits VRAM (with NF4 4-bit "
     "below 24 GB) wins. Patches every MLP forward to expose "
     "`h = SiLU(W_gate x) * (W_up x)` with `retain_grad`.\n\n"
-    "*To force a different model* (e.g. Med42 for comparison): set "
-    "`os.environ['MODEL_OVERRIDE'] = 'm42-health/Llama3-Med42-8B'` "
-    "**before** running this cell — that path needs `HF_TOKEN` because Med42 is gated."
+    "*To force a specific Qwen variant*: set "
+    "`os.environ['MODEL_OVERRIDE'] = 'Qwen/<exact-repo-name>'` "
+    "**before** running this cell."
 ))
 
 cells.append(code(wrap("load model", """
@@ -196,8 +212,8 @@ else:
 USE_4BIT = total_gb < 24.0
 print(f'GPU total: {total_gb:.1f} GB  |  use_4bit = {USE_4BIT}')
 
-# Default chain is QWEN-ONLY (per user request). To load Med42 / OpenBioLLM
-# instead, set MODEL_OVERRIDE='m42-health/Llama3-Med42-8B' (gated).
+# Default chain is QWEN-ONLY. To force a different Qwen variant set
+# MODEL_OVERRIDE='Qwen/<exact-repo-name>' before this cell.
 override = os.environ.get('MODEL_OVERRIDE')
 candidates = (override,) if override else DEFAULT_MODEL_CANDIDATES
 token = os.environ.get('HF_TOKEN')
@@ -574,7 +590,7 @@ critical = max(mean_per_layer, key=mean_per_layer.get)
 print(f'Critical layer (mean score {mean_per_layer[critical]:+.3f}): L{critical}')
 
 # FULL-d_ff drill at the critical layer — every neuron gets patched in turn.
-# For Med42-8B (d_ff=14336) that's ~14k forwards through one pair on the
+# For an 8B-class model (d_ff≈14k) that's ~14k forwards through one pair on the
 # Blackwell GPU, ~30 min wall. Output is the per-neuron routing contribution.
 drill_path = H3_RESULTS / f'drill_L{critical}_full.json'
 if drill_path.exists():

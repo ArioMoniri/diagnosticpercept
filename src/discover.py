@@ -126,8 +126,8 @@ def _per_token_stats(
             accum_g[L] += g_win
 
         # Free the autograd graph + cached activations between prompts to keep
-        # peak VRAM bounded (matters on T4 / L4 where Med42-8B in 4-bit already
-        # sits at ~5 GB after load).
+        # peak VRAM bounded (matters on smaller GPUs where an 8B model in
+        # 4-bit already sits at ~5 GB after load).
         del out, loss
         clear_h(layers)
         lm.model.zero_grad(set_to_none=True)

@@ -9,14 +9,15 @@ safety alignment to **clinical diagnosis** in a medical LLM.
 
 ## Run it
 
-1. **Accept the Med42 license** (one click): https://huggingface.co/m42-health/Llama3-Med42-8B
-2. **Create an HF token**: https://huggingface.co/settings/tokens (`read` scope)
-3. **Open the notebook in Colab** via the badge above
-4. Either add `HF_TOKEN` as a Colab secret (🔑 sidebar) or paste it when `notebook_login()` prompts
-5. Run all cells — automation covers model load → H1 → H2 → H3 → results JSON
+1. **Open the notebook in Colab** via the badge above
+2. (Optional) Add `GH_TOKEN` as a Colab secret if you want the git-bus bridge to push results back
+3. Runtime → A100 GPU, High-RAM
+4. Run all cells — automation covers model load → H1 → H8 → results JSON
 
-If you skip step 1, the notebook automatically falls back to
-[`aaditya/Llama3-OpenBioLLM-8B`](https://huggingface.co/aaditya/Llama3-OpenBioLLM-8B) (not gated).
+The default model chain is **Qwen-only** (Qwen3-Next → Qwen3.5 → Qwen3
+size ladder). No HF token required for any of these — they're open weights.
+Override with `os.environ['MODEL_OVERRIDE']='Qwen/<repo-name>'` before the
+load cell if you want a specific variant.
 
 ## Hypotheses
 
@@ -69,11 +70,15 @@ pytest tests/test_smoke.py -s
 
 ## Models
 
-- Primary: [`m42-health/Llama3-Med42-8B`](https://huggingface.co/m42-health/Llama3-Med42-8B) (bf16, **gated** — accept license + `huggingface-cli login`)
-- Fallback: [`aaditya/Llama3-OpenBioLLM-8B`](https://huggingface.co/aaditya/Llama3-OpenBioLLM-8B)
+Default candidate chain (first one that exists on HF wins):
+
+- Qwen3-Next family (`Qwen/Qwen3-Next-*`)
+- Qwen3.5 family (`Qwen/Qwen3.5-*`)
+- Qwen3 family (`Qwen/Qwen3-32B`, `Qwen3-14B`, `Qwen3-8B`, `Qwen3-4B`)
 - Smoke-test tiny: [`Qwen/Qwen3-0.6B`](https://huggingface.co/Qwen/Qwen3-0.6B)
 
-Hardware target: Colab Pro L4 (24 GB) or A100. Batch 1 for discovery, up to 4 for patching.
+All are open-weights; no HF token required. NF4 4-bit quantization kicks in
+automatically below 24 GB VRAM. Hardware target: Colab Pro A100 or larger.
 
 ## Running
 

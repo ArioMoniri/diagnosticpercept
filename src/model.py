@@ -99,17 +99,21 @@ def _patch_mlp(mlp: nn.Module) -> None:
 
 
 # Default candidate chain — tried in order, first one that loads wins.
-# QWEN-ONLY by default (user explicitly asked for Qwen). To use Med42 or
-# OpenBioLLM set ``MODEL_OVERRIDE='m42-health/Llama3-Med42-8B'``.
+# QWEN-ONLY. If you know the exact newest Qwen repo name, set
+# ``MODEL_OVERRIDE='Qwen/<exact-name>'`` to short-circuit the chain.
 #
-# Qwen3 (April 2025) is the latest Qwen family confirmed on HF; the
-# instruct variant is the base repo (no ``-Instruct`` suffix). All entries
-# below are verified to exist on huggingface.co/Qwen at the time of
-# writing. Qwen3.5 names were speculative and have been removed.
+# Naming-convention sweep (since exact May 2026 Qwen3.5 / Qwen3-Next names
+# can't be confirmed at training time). Each line tries one plausible
+# pattern; non-existent repos just print "not on HF, skipping" and we
+# proceed to the next.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    # Qwen3.5 — exact repo name unknown at training time. We try both
-    # Qwen3 style (no suffix) and Qwen2.5 style (-Instruct suffix). If the
-    # real name differs, set MODEL_OVERRIDE to it and skip the guesses.
+    # Qwen3-Next (post-Qwen3 line; MoE variants):
+    "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    "Qwen/Qwen3-Next-80B-A3B",
+    "Qwen/Qwen3-Next-32B-Instruct",
+    "Qwen/Qwen3-Next-32B",
+    # Qwen3.5 — both naming conventions, full size ladder:
+    "Qwen/Qwen3.5-235B-A22B-Instruct",
     "Qwen/Qwen3.5-72B-Instruct",
     "Qwen/Qwen3.5-72B",
     "Qwen/Qwen3.5-32B-Instruct",
@@ -120,7 +124,7 @@ DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
     "Qwen/Qwen3.5-8B",
     "Qwen/Qwen3.5-7B-Instruct",
     "Qwen/Qwen3.5-7B",
-    # Confirmed Qwen3 fallbacks (verified live on HF):
+    # Qwen3 (April 2025) — confirmed live fallbacks:
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
@@ -136,7 +140,7 @@ def load_first_available(
     """Try ``candidates`` in order, returning (model, picked_name).
 
     Each failure prints the exception and proceeds. Raises if every
-    candidate fails. Pass ``token=`` for gated models (Med42).
+    candidate fails. Pass ``token=`` if any candidate is a gated model.
     """
     last_err: Exception | None = None
     for name in candidates:
