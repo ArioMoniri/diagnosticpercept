@@ -145,17 +145,22 @@ def collect_xtask(
             continue
         correct = (predicted_letter == item.gold)
 
-        # Capture MCQ acts at the answer-letter position by re-running the
-        # prompt + tokens up to and including the answer letter.
-        full_ids = torch.cat([enc.input_ids[0], gen_ids[:ans_pos + 1]]).unsqueeze(0)
+        # Capture MCQ acts at the position whose logit PRODUCED the letter:
+        # forward over prompt + tokens up to (not including) the letter token.
+        # The last position then carries that activation. Previous version
+        # was off-by-one (included the letter itself, reading the next slot).
+        # Caught by ml-developer review 2026-05-29.
+        full_ids = torch.cat([enc.input_ids[0], gen_ids[:ans_pos]]).unsqueeze(0)
         lm.model(input_ids=full_ids, use_cache=False)
         for L in layer_indices:
-            mcq_buf[L].append(_signed_max_at_position(lm.layers[L].mlp._h.detach().float()))
+            mcq_buf[L].append(lm.layers[L].mlp._h.detach().float()[0, -1, :].cpu())
         clear_h(lm.layers)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         # ---------- Prose attestation forward ----------
+        # Prompt ends with "Answer:" so the *last* position is the one whose
+        # logit produces yes/no — capture h there directly.
         prose_prompt = _PROSE_ATTEST_TEMPLATE.format(
             question=item.question.strip(),
             letter=predicted_letter,
@@ -169,7 +174,7 @@ def collect_xtask(
         p_no = float(probs[torch.as_tensor(no_ids, device=probs.device)].sum())
 
         for L in layer_indices:
-            prose_buf[L].append(_signed_max_at_position(lm.layers[L].mlp._h.detach().float()))
+            prose_buf[L].append(lm.layers[L].mlp._h.detach().float()[0, -1, :].cpu())
         clear_h(lm.layers)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

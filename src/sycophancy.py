@@ -321,10 +321,16 @@ def find_sycophancy_neurons(
         a_p = accum_a_push[L] / count
         g_b = accum_g_base[L] / count
         g_p = accum_g_push[L] / count
-        # Eq.4-style: gradient(combined) × (push − base). Higher score = neuron
-        # fires harder under pushback AND moves the loss in the right direction.
+        # Sign convention: L = -(logit_gold - logit_wrong), so ∂L/∂h points
+        # TOWARD selecting wrong. A *sycophancy* neuron fires harder on
+        # pushback (a_p > a_b) AND aligns with the direction that flips the
+        # model to "wrong" (i.e. it contributes positively to -G * (... )).
+        # Ranking by `-G * (a_p - a_b)` puts ablation-suppresses-sycophancy
+        # neurons at the top. Previous version used `+G * (...)` which
+        # ranked anti-sycophancy neurons (ablating them would *increase*
+        # capitulation). Caught by ml-developer review 2026-05-29.
         G = g_b + g_p
-        score = G * (a_p - a_b)
+        score = -G * (a_p - a_b)
         topk = torch.topk(score, k=min(top_k, score.numel()))
         for s_val, n_idx in zip(topk.values.tolist(), topk.indices.tolist()):
             n = int(n_idx)

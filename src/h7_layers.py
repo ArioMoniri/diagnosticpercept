@@ -98,17 +98,20 @@ def collect_answer_position_acts(
                 predicted_letter = L; break
         correct = (predicted_letter == item.gold)
 
-        # Re-run a *single* forward over the prompt + everything up to and
-        # including the answer-position token to capture h on each layer at
-        # the moment the answer letter was emitted. This is the activation
-        # snapshot we correlate with miscalibration.
-        full_ids = torch.cat([enc.input_ids[0], generated_ids[:ans_pos + 1]]).unsqueeze(0)
+        # Re-run a forward over prompt + tokens UP TO (but not including) the
+        # answer-letter token. The last position of h on that forward
+        # corresponds to the logit that *produced* the answer letter — exactly
+        # the activation we want to correlate with miscalibration. The previous
+        # version went one token too far (h[-1] then was the position whose
+        # logit predicts the token AFTER the letter). Caught by ml-developer
+        # review 2026-05-29.
+        full_ids = torch.cat([enc.input_ids[0], generated_ids[:ans_pos]]).unsqueeze(0)
         lm.model(input_ids=full_ids, use_cache=False)
         for L in layer_indices:
             h = lm.layers[L].mlp._h.detach().float()  # [1, T, d_ff]
-            argmax = h.abs().argmax(dim=1, keepdim=True)
-            signed = h.gather(1, argmax).squeeze(1).squeeze(0).cpu()  # [d_ff]
-            acts_per_layer[L].append(signed)
+            # The answer-position activation IS at the last position now.
+            ans_act = h[0, -1, :].cpu()  # [d_ff]
+            acts_per_layer[L].append(ans_act)
         clear_h(lm.layers)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

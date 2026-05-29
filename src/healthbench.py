@@ -277,15 +277,13 @@ class BenchmarkRow:
 
 
 def _letter_token_ids(tokenizer, letters: Sequence[str]) -> Dict[str, int]:
-    """First-token ID for each letter under common surrounding contexts.
+    """First-token ID for each letter under common contexts (legacy shape).
 
-    We probe both " A" (leading space, the usual continuation form) and "A"
-    (bare) and take the most common ID across them. The map returned is
-    ``{letter: id}`` for fast probability lookup.
+    Returned as ``{letter: first_id}`` keeping the leading-space form as the
+    canonical one. Most callers want :func:`_letter_token_id_sets` instead.
     """
     out: Dict[str, int] = {}
     for L in letters:
-        # Prefer the leading-space form (matches "Answer: A").
         ids = tokenizer(" " + L, add_special_tokens=False).input_ids
         if ids:
             out[L] = ids[0]
@@ -293,6 +291,27 @@ def _letter_token_ids(tokenizer, letters: Sequence[str]) -> Dict[str, int]:
             ids = tokenizer(L, add_special_tokens=False).input_ids
             if ids:
                 out[L] = ids[0]
+    return out
+
+
+def _letter_token_id_sets(tokenizer, letters: Sequence[str]) -> Dict[str, set]:
+    """All plausible first-token IDs per letter across surrounding contexts.
+
+    For each letter we probe leading-space (`' A'`), bare (`'A'`), and
+    newline-prefixed (`'\\nA'`) forms — different tokenizers emit different
+    IDs depending on what preceded the letter. Probability lookup of
+    ``p_gold_letter`` should sum over the set so a missed variant doesn't
+    silently zero out the gold probability. Caught by ml-developer review.
+    """
+    out: Dict[str, set] = {}
+    for L in letters:
+        ids: set = set()
+        for ctx in (" ", "", "\n", "\t"):
+            tok_ids = tokenizer(ctx + L, add_special_tokens=False).input_ids
+            if tok_ids:
+                ids.add(tok_ids[0])
+        if ids:
+            out[L] = ids
     return out
 
 
@@ -312,10 +331,13 @@ def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: i
     letter, and ``generated_ids[i]`` is the letter token itself. Returns
     ``None`` if "Answer:" never appears in the generation.
     """
-    text = ""
+    # Cumulative decode of generated_ids[:i+1] — robust to BPE byte-fallback
+    # tokens (e.g. multi-byte chars in clinical text like —, μ, β) that
+    # split across token boundaries. Per-token decode could lose those.
+    # Caught by ml-developer review 2026-05-29.
     upper = min(int(generated_ids.shape[0]), max_search)
     for i in range(upper):
-        text += tokenizer.decode([int(generated_ids[i])], skip_special_tokens=True)
+        text = tokenizer.decode(generated_ids[:i + 1], skip_special_tokens=True)
         if _ANSWER_END_RE.search(text):
             # The next token (i+1) was emitted *by* the logit at position i+1,
             # which we have in gen.scores[i+1]. But the letter token itself is
@@ -356,9 +378,12 @@ def run_one(
     first_probs = F.softmax(gen.scores[0][0].float(), dim=-1)
     p_top1_first = float(first_probs.max())
 
-    letter_ids = _letter_token_ids(tok, list(item.options.keys()))
-    gold_id = letter_ids.get(item.gold)
-    p_gold_first = float(first_probs[gold_id]) if gold_id is not None else 0.0
+    # Use the SET version of letter ids so we sum probability across leading-
+    # space, bare, newline-prefixed token variants. Single-id lookup misses
+    # the gold-token when the tokenizer emitted the other form.
+    letter_id_sets = _letter_token_id_sets(tok, list(item.options.keys()))
+    gold_ids = letter_id_sets.get(item.gold, set())
+    p_gold_first = float(sum(first_probs[i].item() for i in gold_ids))
 
     # ---- Calibration AT the answer letter (the meaningful signal) ----
     generated_ids = gen.sequences[0, enc.input_ids.shape[1]:]
@@ -366,7 +391,7 @@ def run_one(
     if ans_pos is not None and ans_pos < len(gen.scores):
         ans_probs = F.softmax(gen.scores[ans_pos][0].float(), dim=-1)
         p_top1_at_answer = float(ans_probs.max())
-        p_gold_at_answer = float(ans_probs[gold_id]) if gold_id is not None else 0.0
+        p_gold_at_answer = float(sum(ans_probs[i].item() for i in gold_ids))
         answer_pos_found = True
     else:
         # Fall back to first-token if the model didn't honor the format.
