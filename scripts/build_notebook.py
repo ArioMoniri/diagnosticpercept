@@ -1138,10 +1138,14 @@ if N_GPUS > 1:
         condition_specs['h3_zero_layer']      = dict(type='zero_mlp', layers=[int(critical)])
         condition_specs['h4_ablate_halluc']   = dict(type='ablate', neurons=top_halluc)
         condition_specs['h4_h5_combined']     = dict(type='ablate', neurons=combined)
+    # Force 4-bit quant in workers regardless of USE_4BIT (which was set in
+    # the env-check cell for *single*-GPU bf16). With N model copies in N
+    # processes, 4-bit gives ~66 GB headroom per H100 vs 16 GB at bf16 —
+    # OOM-proof on reasoning chains.
     run_conditions_parallel(
         model_name=MODEL_NAME, items=items, condition_specs=condition_specs,
         out_dir=H6_RESULTS, n_gpus=N_GPUS, token=os.environ.get('HF_TOKEN'),
-        quantize_4bit=USE_4BIT,
+        quantize_4bit=True,
     )
     # Re-build all_results from the merged jsonls so downstream cells work.
     from src.healthbench import BenchmarkRow

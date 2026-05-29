@@ -351,8 +351,6 @@ def run_one(
             output_scores=True, return_dict_in_generate=True,
         )
     clear_h(lm.layers)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     # ---- Calibration at first token (legacy, ≈ "Reasoning") ----
     first_probs = F.softmax(gen.scores[0][0].float(), dim=-1)
@@ -381,7 +379,7 @@ def run_one(
     reasoning = parse_reasoning(raw)
     correct = (predicted is not None and predicted == item.gold)
 
-    return BenchmarkRow(
+    row = BenchmarkRow(
         q_id=item.q_id, condition=condition,
         question=item.question, options=item.options, gold=item.gold,
         predicted=predicted, correct=correct,
@@ -390,6 +388,13 @@ def run_one(
         p_top1_at_answer=p_top1_at_answer, p_gold_at_answer=p_gold_at_answer,
         answer_pos_found=answer_pos_found,
     )
+    # Free the generate-time KV cache + scores AFTER all metric reads. This
+    # is critical for parallel workers: without it, reasoning chains spike
+    # VRAM ~5-8 GB per call and the next gen can OOM.
+    del gen, generated_ids, first_probs
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    return row
 
 
 # ---------------------------------------------------------------------------

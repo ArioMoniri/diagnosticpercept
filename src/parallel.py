@@ -112,13 +112,21 @@ def _worker_main(
     # before any torch CUDA call in this process.
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
 
+    # Enable expandable segments to avoid fragmentation across many gen calls.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     import torch as _t
     from .healthbench import MCQItem, run_conditions
     from .model import load_model
 
     _t.cuda.set_device(0)   # index 0 inside the restricted view
-    print(f"[worker {rank}] loading {model_name} on GPU{rank}")
+    print(f"[worker {rank}] loading {model_name} on GPU{rank}  (4bit={quantize_4bit})")
     lm = load_model(model_name, token=token, quantize_4bit=quantize_4bit)
+    if _t.cuda.is_available():
+        _t.cuda.empty_cache()
+        print(f"[worker {rank}] VRAM after load: "
+              f"{_t.cuda.memory_allocated()/1e9:.2f} GB allocated, "
+              f"{_t.cuda.memory_reserved()/1e9:.2f} GB reserved")
     conditions = build_conditions_from_specs(lm.layers, condition_specs)
 
     # Reconstruct items.
@@ -159,8 +167,14 @@ def run_conditions_parallel(
     out_dir: Path,
     n_gpus: Optional[int] = None,
     token: Optional[str] = None,
-    quantize_4bit: bool = False,
+    quantize_4bit: bool = True,
 ) -> Path:
+    """Default ``quantize_4bit=True`` because each worker holds a full model
+    copy on its own GPU; even on an 80 GB H100, the bf16 27B-class model
+    (~64 GB weights) leaves only ~16 GB for reasoning-chain KV cache and
+    activations — too tight, OOM-prone on long generations.
+
+    NF4 weights (~14 GB) leave ~66 GB headroom per worker → robust."""
     """Run condition_specs over ``items`` across ``n_gpus`` data-parallel workers.
 
     Each worker writes ``<out_dir>/_gpu<rank>/<condition>.jsonl``. After all
