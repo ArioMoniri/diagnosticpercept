@@ -14,7 +14,7 @@ safety alignment to **clinical diagnosis** in a medical LLM.
 3. Runtime → A100 GPU, High-RAM
 4. Run all cells — automation covers model load → H1 → H8 → results JSON
 
-The default model chain is **Qwen-only** (Qwen3.5-27B → Qwen3 size ladder).
+The default model chain is **Qwen-only** (Qwen3 size ladder: 32B → 14B → 8B → 4B). Qwen3.5/3.6 checkpoints don't load cleanly on standard transformers and are skipped.
 No HF token required — all are open weights. Override with
 `os.environ['MODEL_OVERRIDE']='Qwen/<repo-name>'` before the load cell.
 
@@ -76,8 +76,6 @@ pytest tests/test_smoke.py -s
 
 Default candidate chain (first one that exists on HF wins):
 
-- Qwen3-Next family (`Qwen/Qwen3-Next-*`)
-- Qwen3.5 family (`Qwen/Qwen3.5-*`)
 - Qwen3 family (`Qwen/Qwen3-32B`, `Qwen3-14B`, `Qwen3-8B`, `Qwen3-4B`)
 - Smoke-test tiny: [`Qwen/Qwen3-0.6B`](https://huggingface.co/Qwen/Qwen3-0.6B)
 

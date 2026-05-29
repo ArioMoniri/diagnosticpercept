@@ -409,9 +409,11 @@ else:
 
 cells.append(md(
     "## 2. Load model + verify hooks\n\n"
-    "Default chain is **Qwen-only**: tries the newest Qwen3.5 variants, then "
-    "Qwen3-32B → 14B → 8B → 4B. The first that fits VRAM (with NF4 4-bit "
-    "below 24 GB) wins. Patches every MLP forward to expose "
+    "Default chain is **Qwen-only**, Qwen3 family (Qwen3-32B → 14B → 8B → "
+    "4B). The first that fits VRAM (with NF4 4-bit below 48 GB) wins. "
+    "Qwen3.5/3.6 are not on the chain — their checkpoints don't load "
+    "cleanly on transformers' Qwen3_5ForCausalLM class today. Patches "
+    "every MLP forward to expose "
     "`h = SiLU(W_gate x) * (W_up x)` with `retain_grad`.\n\n"
     "*To force a specific Qwen variant*: set "
     "`os.environ['MODEL_OVERRIDE'] = 'Qwen/<exact-repo-name>'` "

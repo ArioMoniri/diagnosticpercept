@@ -33,18 +33,19 @@ Pick **ONE** of these three configs based on quota:
 | GPU | NVIDIA H100 80 GB ×1 | NVIDIA A100 80 GB ×1 | NVIDIA A100 40 GB ×1 |
 | Wall time (full sweep) | ~1.6 hr | ~1.8 hr | ~2.4 hr |
 | Approx cost/hr | ~$11.06 | ~$5.05 | ~$3.67 |
-| H1 backward fits Qwen3.5-27B? | ✅ bf16 | ✅ NF4 | ❌ (auto-drops to 9B) |
+| H1 backward fits Qwen3-32B? | ✅ bf16 | ✅ NF4 | ❌ (auto-drops to 14B/8B) |
 | Disk | 300 GB pd-ssd | 300 GB pd-ssd | 200 GB pd-balanced |
 | Idle shutdown | 4 h | 4 h | 4 h |
 | Internet egress | ON | ON | ON |
 | Env vars | `GH_TOKEN=ghp_...` | `GH_TOKEN=ghp_...` | `GH_TOKEN=ghp_...` |
 
 Note: **do not pick `a2-highgpu-1g` again** (it's the 40 GB A100 — works
-but the notebook will auto-drop to Qwen3.5-9B because the 27B backward is
+but the notebook will auto-drop to Qwen3-14B because the 32B backward is
 too tight). The notebook auto-detects GPU memory and:
-- ≥ 70 GB → uses Qwen3.5-27B at bf16 (best capability)
-- 36–70 GB → uses Qwen3.5-9B at NF4 (safe for H1 backward)
-- < 36 GB → uses Qwen3.5-4B
+- ≥ 70 GB → uses Qwen3-32B at bf16 (best capability)
+- 24–70 GB → uses Qwen3-14B (NF4 ~7 GB, bf16 ~28 GB; safe for H1 backward)
+- 12–24 GB → uses Qwen3-8B
+- < 12 GB → uses Qwen3-4B
 
 so you don't have to set `MODEL_OVERRIDE` manually.
 

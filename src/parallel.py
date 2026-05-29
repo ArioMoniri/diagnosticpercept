@@ -13,9 +13,11 @@ Why data parallelism (not tensor / pipeline parallelism):
     ``device_map='auto'`` those modules live on different GPUs — the
     Python-level hooks still work but the gradient pass and intervention
     composition become tricky to reason about.
-  - Data parallelism is one model copy per GPU, ~64 GB per copy at bf16
-    for Qwen3.6-27B → fits comfortably in an H100 80 GB. With N=4 H100
-    we get a clean 4× wall-time reduction on H6/H7/sycophancy.
+  - Data parallelism is one model copy per GPU. Per-worker VRAM with
+    NF4 quantization (default in this path): ~7 GB for Qwen3-14B,
+    ~16 GB for Qwen3-32B. Either fits comfortably on a single A100-40G
+    or H100. With N=4 GPUs we get a clean 4× wall-time reduction on
+    H6/H7/sycophancy.
 
 Use::
 

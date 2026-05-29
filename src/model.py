@@ -99,23 +99,15 @@ def _patch_mlp(mlp: nn.Module) -> None:
 
 
 # Default candidate chain — tried in order, first one that loads wins.
-# QWEN-ONLY. If you know the exact newest Qwen repo name, set
-# ``MODEL_OVERRIDE='Qwen/<exact-name>'`` to short-circuit the chain.
-#
-# Naming-convention sweep (since exact May 2026 Qwen3.5 / Qwen3-Next names
-# can't be confirmed at training time). Each line tries one plausible
-# pattern; non-existent repos just print "not on HF, skipping" and we
-# proceed to the next.
+# QWEN-ONLY. Qwen3 (April 2025) is the latest family that loads cleanly
+# on standard transformers. Qwen3.5/3.6/Qwen3-Next use a hybrid Gated
+# DeltaNet + Gated Attention architecture (model_type='qwen3_5') with
+# integrated vision tower + MTP head; their checkpoints have layer
+# layouts incompatible with what transformers' Qwen3_5ForCausalLM tries
+# to load (most weights end up MISSING/UNEXPECTED). They're omitted from
+# the default chain — set MODEL_OVERRIDE='Qwen/Qwen3.5-...' to try them
+# once transformers ships proper handlers.
 DEFAULT_MODEL_CANDIDATES: tuple[str, ...] = (
-    # Qwen3.6 (May 2026) — newest, same hybrid Gated DeltaNet / Gated
-    # Attention arch as Qwen3.5, loaded by the same Qwen3_5ForCausalLM
-    # class. Needs transformers main; the install cell handles this.
-    "Qwen/Qwen3.6-27B",
-    "Qwen/Qwen3.5-27B",
-    "Qwen/Qwen3.5-9B",
-    "Qwen/Qwen3.5-4B",
-    # Qwen3 (April 2025) — confirmed loadable on standard transformers
-    # without the git-main upgrade. Final fallbacks.
     "Qwen/Qwen3-32B",
     "Qwen/Qwen3-14B",
     "Qwen/Qwen3-8B",
