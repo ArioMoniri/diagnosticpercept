@@ -473,8 +473,22 @@ token = os.environ.get('HF_TOKEN')
 print(f'Candidate chain ({len(candidates)} entries):')
 for c in candidates: print(f'  - {c}')
 
+# Multi-GPU: spread the model across all visible GPUs so the backward pass
+# (H1 discovery + sanity) has headroom. Without max_memory, accelerate puts
+# everything on GPU0 if it fits, then backward OOMs needing 2× the weights.
+n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+max_memory = None
+if n_gpus > 1:
+    # Reserve ~25% of each GPU for weights; leaves 75% for backward grads /
+    # activations / KV cache. For Qwen3.6-27B bf16 (~64 GB) on 4× 80GB:
+    # 64/4 = 16 GB weights/GPU, 64 GB free/GPU for backward → comfortable.
+    per_gpu_gb = int(torch.cuda.get_device_properties(0).total_memory / 1e9 * 0.25)
+    max_memory = {i: f'{per_gpu_gb}GiB' for i in range(n_gpus)}
+    print(f'Multi-GPU mode ({n_gpus} GPUs): max_memory={max_memory}')
+
 lm, MODEL_NAME = load_first_available(
     candidates=candidates, token=token, quantize_4bit=USE_4BIT,
+    max_memory=max_memory,
 )
 
 # Loud warning if we ended up on something other than Qwen.

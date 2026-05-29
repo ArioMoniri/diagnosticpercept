@@ -160,6 +160,7 @@ def load_model(
     trust_remote_code: bool = True,
     token: str | None = None,
     quantize_4bit: bool = False,
+    max_memory: dict | None = None,
 ) -> LoadedModel:
     """Load a causal LM and patch every MLP to expose ``h`` with ``retain_grad``.
 
@@ -184,6 +185,8 @@ def load_model(
         trust_remote_code=trust_remote_code,
         token=token,
     )
+    if max_memory is not None:
+        kwargs["max_memory"] = max_memory
     if quantize_4bit:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(
