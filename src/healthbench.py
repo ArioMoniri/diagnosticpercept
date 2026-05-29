@@ -274,6 +274,22 @@ class BenchmarkRow:
     p_gold_at_answer: float
     answer_pos_found: bool   # whether we located "Answer:" in the chain
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "BenchmarkRow":
+        """Schema-tolerant constructor — fills missing fields with defaults.
+
+        Lets `run_conditions` resume from jsonl written by an earlier commit
+        that lacked some fields. Caught by ml-developer review (C6).
+        """
+        defaults = {
+            "p_top1_first": 0.0, "p_gold_first": 0.0,
+            "p_top1_at_answer": 0.0, "p_gold_at_answer": 0.0,
+            "answer_pos_found": False, "reasoning": "",
+            "raw_output": "", "predicted": None,
+        }
+        kept = {k: d.get(k, defaults.get(k)) for k in cls.__dataclass_fields__}
+        return cls(**kept)
+
 
 
 def _letter_token_ids(tokenizer, letters: Sequence[str]) -> Dict[str, int]:
@@ -415,9 +431,15 @@ def run_one(
     )
     # Free the generate-time KV cache + scores AFTER all metric reads. This
     # is critical for parallel workers: without it, reasoning chains spike
-    # VRAM ~5-8 GB per call and the next gen can OOM.
+    # VRAM ~5-8 GB per call and the next gen can OOM. C7 fix: also explicitly
+    # delete the scores list (max_new_tokens × [1, vocab] = ~310 MB / call
+    # for Qwen3 at 512 new tokens) BEFORE clearing the cache, otherwise the
+    # cuda allocator keeps the reserved pool high across questions.
+    if hasattr(gen, "scores") and gen.scores is not None:
+        gen.scores = None
     del gen, generated_ids, first_probs
     if torch.cuda.is_available():
+        import gc; gc.collect()
         torch.cuda.empty_cache()
     return row
 
@@ -517,7 +539,7 @@ def run_conditions(
             with jsonl_path.open() as f:
                 for line in f:
                     if line.strip():
-                        results.append(BenchmarkRow(**json.loads(line)))
+                        results.append(BenchmarkRow.from_dict(json.loads(line)))
             already = len(results)
             print(f"[{cond_name}] resuming, {already} rows on disk.")
         else:

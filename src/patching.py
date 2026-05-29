@@ -46,25 +46,29 @@ def _first_token_id(tokenizer, label: str) -> int:
 
 
 def _shape_match(cached: torch.Tensor, corrupted_ids: torch.Tensor) -> torch.Tensor:
-    """Truncate or zero-pad cached tensor to corrupted seq length on dim=1.
+    """Require identical token counts between clean and corrupted prompts.
 
-    Clean and corrupted prompts may have different token counts; we align to
-    the corrupted length so the residual patch fits. This is the standard
-    convention used by Meng 2022 when token counts differ — pad with the
-    corrupted run's own state (i.e. zero offset) for any unmatched positions.
+    Earlier this function silently padded the clean cache with zeros on the
+    prompt side, which placed clean residuals only at the answer-tail
+    positions — equivalent to measuring "how well does the answer-tail
+    commitment recover," not the routing path. The ROME / IOI convention
+    requires token-count-matched (clean, corrupted) pairs so that position-i
+    on each run corresponds to the same role token.
+
+    If your H3 pair has mismatched lengths, edit the prompts in
+    ``src/data.py`` to swap only the disease-distinguishing words while
+    keeping the rest token-identical. Caught by ml-developer review.
     """
     target_len = corrupted_ids.shape[1]
     cur_len = cached.shape[1]
     if cur_len == target_len:
         return cached
-    if cur_len > target_len:
-        # Keep the *last* target_len positions — diagnosis signal is at the end.
-        return cached[:, -target_len:, :]
-    pad = torch.zeros(
-        cached.shape[0], target_len - cur_len, cached.shape[2],
-        dtype=cached.dtype, device=cached.device,
+    raise ValueError(
+        f"H3 patching requires identical-length clean/corrupted pairs; "
+        f"got clean_len={cur_len} corrupted_len={target_len}. Rewrite the "
+        f"pair in src/data.py H3_PAIRS so token counts match (swap only the "
+        f"distinguishing words, keep prompt scaffolding identical)."
     )
-    return torch.cat([pad, cached], dim=1)
 
 
 @torch.no_grad()

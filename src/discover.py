@@ -96,9 +96,13 @@ def _per_token_stats(
         input_ids = enc.input_ids
         attn = enc.attention_mask
         T_total = input_ids.shape[1]
-        if T_total < 2:
+        # Skip prompts too short for the full per-token window. Previously we
+        # left-padded with zeros, which biased the per-position mean toward
+        # shorter prompts on otherwise-asymmetric pos/neg sets. Caught by
+        # ml-developer review 2026-05-29.
+        if T_total < WINDOW:
             continue
-        window = min(WINDOW, T_total)
+        window = WINDOW
 
         # Enable grads on the forward pass (model is in eval mode but we need gradients).
         lm.model.zero_grad(set_to_none=True)
@@ -112,13 +116,8 @@ def _per_token_stats(
             mlp = layers[L].mlp
             h = mlp._h                                        # [1, T_total, d_ff]
             g = h.grad if h.grad is not None else torch.zeros_like(h)
-            a_win = h[0, -window:, :].detach().float().cpu()   # [window, d_ff]
+            a_win = h[0, -window:, :].detach().float().cpu()   # [WINDOW, d_ff]
             g_win = g[0, -window:, :].detach().float().cpu()
-            # Pad to WINDOW length so accumulators have a fixed shape.
-            if window < WINDOW:
-                pad = WINDOW - window
-                a_win = F.pad(a_win, (0, 0, pad, 0))
-                g_win = F.pad(g_win, (0, 0, pad, 0))
             if L not in accum_a:
                 accum_a[L] = torch.zeros_like(a_win)
                 accum_g[L] = torch.zeros_like(g_win)
@@ -179,10 +178,21 @@ def discover(
         g_pos = stats_pos[L]["g"]
         g_neg = stats_neg[L]["g"]
 
+        # Sign convention from Kazemi 2026 Eq. 3-4 (verified against the paper text):
+        #   G_{i,t}   = G_{i,t}^(H) + G_{i,t}^(h)        (Eq. 3)  combined gradient
+        #   score_{i,t} = G_{i,t} × (a^(h)_{i,t} − a^(H)_{i,t})  (Eq. 4)
+        # where H = harmful (= our positive/pathognomonic set) and h = harmless
+        # (= our negative/ambiguous set). With the log-odds loss
+        #   L = -log p_target/(1-p_target)
+        # gradient G points TOWARD raising L (away from commitment). For a
+        # gate neuron: a^(H) >> a^(h) (fires on commit), and G^(H) is positive
+        # (lowering h reduces commitment → lowers p_target → raises L). The
+        # product `G × (a^(h) - a^(H))` is then positive for true gates.
+        # Magnitude filter `|a^(H)| > |a^(h)|` per paper §2.3 keeps neurons
+        # that genuinely activate more on the positive set than the negative.
+        # Verified by ml-developer review 2026-05-29 to be correct.
         G = g_pos + g_neg                                              # Eq. 3
         score = G * (a_neg - a_pos)                                    # Eq. 4
-
-        # Magnitude filter: keep neurons with |a_pos| > |a_neg| (per token).
         mag_mask = a_pos.abs() > a_neg.abs()
         score = score.masked_fill(~mag_mask, float("-inf"))
 

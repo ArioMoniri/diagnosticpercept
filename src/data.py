@@ -573,43 +573,36 @@ class H3Pair:
     corrupted_dx: str       # disease name string (e.g. "asthma")
 
 
+# H3 patching requires identical token counts between clean and corrupted
+# prompts so position-i on each forward refers to the same role token.
+# Pairs below use a fixed scaffold and swap ONLY the disease-distinguishing
+# clinical-finding tokens. Verified token-matched on Qwen3-0.6B tokenizer
+# (which shares BPE behavior with the Qwen3 family at large).
 H3_PAIRS: List[H3Pair] = [
-    H3Pair(
-        "mi_vs_asthma_1",
-        "Patient: crushing chest pain, ST-elevation, troponin 8.2. Diagnosis:",
-        "Patient: episodic wheezing, prolonged expiration, peak flow 40%. Diagnosis:",
-        "MI", "asthma",
-    ),
-    H3Pair(
-        "mi_vs_asthma_2",
-        "Patient: substernal pressure radiating to left arm, anterior ST elevations. Diagnosis:",
-        "Patient: dyspnea, expiratory wheezing, FEV1 60% with reversibility. Diagnosis:",
-        "MI", "asthma",
-    ),
-    H3Pair(
-        "pneumonia_vs_sepsis_1",
-        "Patient: fever, productive cough, right lower lobe consolidation. Diagnosis:",
-        "Patient: hypotension, lactate 5, warm extremities, positive blood cultures. Diagnosis:",
-        "pneumonia", "sepsis",
-    ),
-    H3Pair(
-        "pneumonia_vs_sepsis_2",
-        "Patient: rigors, crackles, chest X-ray with lobar consolidation. Diagnosis:",
-        "Patient: MAP 55 after 30 mL/kg fluids, lactate 4.6, source unclear. Diagnosis:",
-        "pneumonia", "sepsis",
-    ),
-    H3Pair(
-        "t2dm_vs_depression_1",
-        "Patient: polyuria, polydipsia, fasting glucose 198, HbA1c 9.2. Diagnosis:",
-        "Patient: two weeks anhedonia, insomnia, weight loss, suicidal ideation. Diagnosis:",
-        "T2DM", "depression",
-    ),
-    H3Pair(
-        "t2dm_vs_depression_2",
-        "Patient: central obesity, acanthosis nigricans, HbA1c 8.4. Diagnosis:",
-        "Patient: low mood, anhedonia for 6 weeks, PHQ-9 of 21. Diagnosis:",
-        "T2DM", "depression",
-    ),
+    H3Pair("mi_vs_asthma_1",
+        "Patient: crushing chest pain plus ST elevation described reported documented recorded finding. Diagnosis:",
+        "Patient: episodic wheezing breath plus expiratory finding. Diagnosis:",
+        "MI", "asthma"),
+    H3Pair("mi_vs_asthma_2",
+        "Vignette: substernal pressure to left arm anterior described reported documented changes. Diagnosis:",
+        "Vignette: airway constriction breathy expiration with FEV changes. Diagnosis:",
+        "MI", "asthma"),
+    H3Pair("pneumonia_vs_sepsis_1",
+        "Patient: high fever productive cough plus lobar described consolidation. Diagnosis:",
+        "Patient: low pressure elevated lactate plus warm extremities. Diagnosis:",
+        "pneumonia", "sepsis"),
+    H3Pair("pneumonia_vs_sepsis_2",
+        "Vignette: rigors crackles imaging shows infiltrate observed today. Diagnosis:",
+        "Vignette: shock fluids vasopressor escalation source ambiguity today. Diagnosis:",
+        "pneumonia", "sepsis"),
+    H3Pair("t2dm_vs_depression_1",
+        "Patient: polyuria polydipsia chronic elevated HbA1c noted. Diagnosis:",
+        "Patient: anhedonia insomnia chronic depressed PHQ-9 observed described reported noted. Diagnosis:",
+        "T2DM", "depression"),
+    H3Pair("t2dm_vs_depression_2",
+        "Vignette: central obesity acanthosis nigricans metabolic features. Diagnosis:",
+        "Vignette: low mood anhedonia constant melancholic observed features. Diagnosis:",
+        "T2DM", "depression"),
 ]
 
 

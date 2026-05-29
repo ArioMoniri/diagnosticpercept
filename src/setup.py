@@ -55,24 +55,45 @@ def detect_runtime() -> str:
 
 
 def setup_caches(content_root: str = "/content/.cache") -> Optional[Path]:
-    """Point HF + pip + tmp caches at ``/content`` (large workspace disk)."""
+    """Point HF / pip / tmp / torch / triton / cuda caches at ``/content``.
+
+    Uses **overwrite** semantics (not ``setdefault``): runtime templates
+    sometimes ship with ``HF_HOME=/root/.cache/huggingface`` pre-set, which
+    would route the 14 GB model download to the small boot disk and fill it.
+    Caught by ml-developer review 2026-05-29 (C1).
+    """
     if not Path("/content").exists():
         return None
     root = Path(content_root)
     root.mkdir(parents=True, exist_ok=True)
-    (root / "pip").mkdir(exist_ok=True)
-    (root / "tmp").mkdir(exist_ok=True)
+    for sub in ("pip", "tmp", "huggingface", "transformers", "torch",
+                "datasets", "triton", "cuda", "torchinductor"):
+        (root / sub).mkdir(exist_ok=True)
     env = {
-        "PIP_CACHE_DIR":      str(root / "pip"),
-        "TMPDIR":             str(root / "tmp"),
-        "HF_HOME":            str(root / "huggingface"),
-        "HF_HUB_CACHE":       str(root / "huggingface"),
-        "TRANSFORMERS_CACHE": str(root / "transformers"),
-        "TORCH_HOME":         str(root / "torch"),
-        "XDG_CACHE_HOME":     str(root),
+        "PIP_CACHE_DIR":         str(root / "pip"),
+        "TMPDIR":                str(root / "tmp"),
+        "HF_HOME":               str(root / "huggingface"),
+        "HF_HUB_CACHE":          str(root / "huggingface"),
+        "TRANSFORMERS_CACHE":    str(root / "transformers"),
+        "TORCH_HOME":            str(root / "torch"),
+        "XDG_CACHE_HOME":        str(root),
+        # New: datasets cache (load_dataset on MedMCQA writes ~250MB to ~/.cache
+        # by default → boot disk). Triton / Inductor / cuBLAS JIT caches grow
+        # over a session and would also hit the boot disk.
+        "HF_DATASETS_CACHE":     str(root / "datasets"),
+        "TRITON_CACHE_DIR":      str(root / "triton"),
+        "CUDA_CACHE_PATH":       str(root / "cuda"),
+        "TORCHINDUCTOR_CACHE_DIR": str(root / "torchinductor"),
     }
+    overwrote = []
     for k, v in env.items():
-        os.environ.setdefault(k, v)
+        prev = os.environ.get(k)
+        if prev and prev != v:
+            overwrote.append(f"{k} (was {prev!r})")
+        os.environ[k] = v
+    if overwrote:
+        print(f"setup_caches: overwrote {len(overwrote)} stale env var(s): "
+              f"{', '.join(overwrote[:3])}{'...' if len(overwrote) > 3 else ''}")
     return root
 
 
@@ -251,15 +272,19 @@ def smart_load_model(plan: Optional[Dict[str, Any]] = None) -> Tuple[Any, str]:
             "dispatched on the cpu or the disk",
         ))
 
-    # Ladder of attempts: reset and retry, then drop to bf16 on a single GPU,
-    # then drop to a smaller model. Each step is logged.
+    # Ladder of attempts. Ordering rationale:
+    #   1. primary (the plan)
+    #   2. retry after CUDA reset (most failures are stale-context)
+    #   3. NF4 single-GPU — safest VRAM footprint; bf16-single skipped
+    #      because for a 14B model on 40GB it strictly OOMs on backward.
+    # The previous "bf16-single-GPU" attempt was a redundant subset of
+    # NF4-single and never succeeded where the others failed (C4).
     lm = name = None
     last_exc: Optional[Exception] = None
     for attempt_label, kw in [
-        ("primary",                      dict()),
-        ("retry after CUDA reset",       dict()),  # same args, after reset
-        ("bf16 single-GPU",              dict(quantize=False, force_single_gpu=True)),
-        ("NF4 single-GPU",               dict(quantize=True,  force_single_gpu=True)),
+        ("primary",                dict()),
+        ("retry after CUDA reset", dict()),  # same args, after reset
+        ("NF4 single-GPU",         dict(quantize=True, force_single_gpu=True)),
     ]:
         try:
             print(f"\n[smart_load] attempt: {attempt_label}")
@@ -273,13 +298,17 @@ def smart_load_model(plan: Optional[Dict[str, Any]] = None) -> Tuple[Any, str]:
             if not _is_recoverable(e):
                 raise
     if lm is None:
-        # Last resort: drop one model size and retry.
+        # Last resort: drop one model size and retry. Louder warning (C5).
         smaller = {"Qwen/Qwen3-32B": "Qwen/Qwen3-14B",
                     "Qwen/Qwen3-14B": "Qwen/Qwen3-8B",
                     "Qwen/Qwen3-8B":  "Qwen/Qwen3-4B"}.get(plan["model"])
         if smaller:
-            print(f"\n[smart_load] all attempts on {plan['model']} failed; "
-                   f"falling back to {smaller}")
+            print()
+            print("!" * 72)
+            print(f"! DOWNGRADE: all 3 attempts on {plan['model']} failed.")
+            print(f"! Falling back to {smaller} (smaller model, NF4 quant).")
+            print(f"! Set MODEL_OVERRIDE='{plan['model']}' to retry without downgrade.")
+            print("!" * 72)
             _full_cuda_reset()
             candidates = [smaller]
             lm, name = _attempt(quantize=True, force_single_gpu=True)

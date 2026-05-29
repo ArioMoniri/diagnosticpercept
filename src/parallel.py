@@ -238,7 +238,7 @@ def _merge_worker_outputs(out_dir: Path, condition_names, n_gpus: int) -> None:
         if merged.exists():
             for line in merged.read_text().splitlines():
                 if line.strip():
-                    rows.append(BenchmarkRow(**json.loads(line)))
+                    rows.append(BenchmarkRow.from_dict(json.loads(line)))
         all_results[cond] = rows
 
     # We need the per-row item-list to rebuild comparison.csv; reuse the

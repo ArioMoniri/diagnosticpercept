@@ -21,6 +21,7 @@ gate. A large positive score = neuron fires harder on trap = *false confidence*.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -78,10 +79,20 @@ def did_commit(
     p_commit = float(probs[target].sum())
 
     new_ids = out.sequences[0, enc.input_ids.shape[1]:]
-    new_ids_list = new_ids.tolist()
     text = tok.decode(new_ids, skip_special_tokens=True)
-    has_target = any(tid in new_ids_list[:6] for tid in target_ids)
-    committed = (p_commit > p_threshold) or has_target
+    # Commitment check by text regex (more reliable than token-id matching:
+    # `" diagnosis"` and `"diagnosis"` tokenize differently across BPE
+    # variants, so the prior `tid in new_ids_list[:6]` under-detected on
+    # responses starting with "The ..."). Look for an explicit commitment
+    # phrase OR an ICD-10-style code. Caught by ml-developer review.
+    _COMMITMENT_TEXT_RE = re.compile(
+        r"\b(diagnosis(?:\s+is)?\s*:?|impression\s*:?|"
+        r"assessment\s*:?|most\s+likely(?:\s+diagnosis)?|"
+        r"consistent\s+with|i\d{2}|e\d{2}|j\d{2}|a\d{2}|f\d{2})\b",
+        re.IGNORECASE,
+    )
+    has_commit_text = bool(_COMMITMENT_TEXT_RE.search(text))
+    committed = (p_commit > p_threshold) or has_commit_text
     return committed, text
 
 
