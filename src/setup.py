@@ -96,8 +96,22 @@ def auto_pick() -> Dict[str, Any]:
     """Decide model name, quantization, max_memory, N_BENCH based on GPUs."""
     import torch
 
+    # If a previous (old inline) cell set MODEL_OVERRIDE to a Qwen3.5/3.6
+    # checkpoint, silently drop it — those don't load on standard
+    # transformers (their qwen3_5 architecture is incomplete: vision tower
+    # + MTP head + Gated DeltaNet layers all missing handlers). User can
+    # still force one via MODEL_OVERRIDE *after* this cell.
+    _override = os.environ.get("MODEL_OVERRIDE", "")
+    if any(_override.startswith(x) for x in (
+        "Qwen/Qwen3.5", "Qwen/Qwen3.6", "Qwen/Qwen3-Next",
+    )):
+        print(f"Ignoring MODEL_OVERRIDE={_override!r} — that checkpoint "
+              f"doesn't load on standard transformers; using auto-pick.")
+        del os.environ["MODEL_OVERRIDE"]
+        _override = ""
+
     plan: Dict[str, Any] = {
-        "model": os.environ.get("MODEL_OVERRIDE", "Qwen/Qwen3.6-27B"),
+        "model": _override or "Qwen/Qwen3-14B",  # safe placeholder; auto_pick overrides
         "use_4bit": None,
         "max_memory": None,
         "n_gpus": 0,

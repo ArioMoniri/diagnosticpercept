@@ -259,42 +259,13 @@ if torch.cuda.is_available():
     gpu_name = torch.cuda.get_device_name(0)
     print(f'GPU: {{gpu_name}}  | Memory: {{gpu_gb:.1f}} GB')
 
-    # ---------- Auto-pick model based on GPU class ----------
-    # Newest Qwen line as of May 2026 is Qwen3.6 (same arch as Qwen3.5).
-    # Memory budgets per GPU (we always pick the same model class for
-    # all workers in the parallel path):
-    #   H100 80GB / A100 80GB  → Qwen3.6-27B bf16 (single-GPU H1) or NF4 (multi-GPU H6)
-    #   A100 40GB              → Qwen3.6-27B NF4 (single-GPU H6); H1 uses Qwen3.5-9B
-    #   L4 24GB                → Qwen3.5-9B
-    #   T4 16GB                → Qwen3.5-4B
-    if not os.environ.get('MODEL_OVERRIDE'):
-        if gpu_gb >= 70:
-            recommended = 'Qwen/Qwen3.6-27B'   # bf16 fits per GPU
-            os.environ['USE_4BIT'] = '0'        # single-GPU runs (H1) use bf16
-        elif gpu_gb >= 36:
-            # A100 40 GB or similar. NF4 27B fits with margin; H1 backward
-            # would OOM in bf16, so we drop H1 to 9B via H1_MODEL_OVERRIDE
-            # while H6 keeps the bigger model via the parallel NF4 path.
-            recommended = 'Qwen/Qwen3.6-27B'
-            os.environ.setdefault('H1_MODEL_OVERRIDE', 'Qwen/Qwen3.5-9B')
-        elif gpu_gb >= 12:
-            recommended = 'Qwen/Qwen3.5-9B'
-        else:
-            recommended = 'Qwen/Qwen3.5-4B'
-        os.environ['MODEL_OVERRIDE'] = recommended
-        print(f'>>> AUTO-PICK: MODEL_OVERRIDE={{recommended}}')
-        if 'H1_MODEL_OVERRIDE' in os.environ:
-            print(f'    H1 backward uses {{os.environ["H1_MODEL_OVERRIDE"]}}'
-                   ' (separate load for the gradient pass)')
-
-    # ---------- Adaptive N_BENCH ----------
-    if gpu_gb >= 70:
-        os.environ.setdefault('N_BENCH', '1273')   # full MedQA test set
-    elif gpu_gb >= 36:
-        os.environ.setdefault('N_BENCH', '600')
-    else:
-        os.environ.setdefault('N_BENCH', '300')
-    print(f'    Adaptive N_BENCH={{os.environ["N_BENCH"]}}')
+    # NOTE: do NOT set MODEL_OVERRIDE / USE_4BIT / N_BENCH here. All
+    # decisioning lives in src/setup.py auto_pick(), which is called by
+    # smart_load_model() in the model-load cell. If you set env vars
+    # here, an old snapshot of THIS cell (frozen in your imported .ipynb)
+    # could write a stale Qwen3.5/3.6 pick that auto_pick can't override
+    # because the env var "wins". src/setup.py also actively strips
+    # MODEL_OVERRIDE if it points to a known-broken Qwen3.5/3.6 checkpoint.
 
 # Disk sanity. Colab Enterprise's boot disk is ~94 GB and starts ~90% full
 # (system image). /content is the 195 GB workspace where caches go.
