@@ -81,8 +81,23 @@ cells.append(code(
 # Set CUDA alloc config BEFORE torch imports anywhere — must be very first.
 cells.append(code("""
 import os
+from pathlib import Path
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+
+# Redirect HF / Torch caches to /content (Colab Enterprise's 195 GB workspace
+# disk) so model weights don't fill the ~90 GB boot disk. Must happen before
+# transformers / huggingface_hub are imported, so set it here.
+_CACHE_ROOT = '/content/.cache' if Path('/content').exists() else None
+if _CACHE_ROOT:
+    Path(_CACHE_ROOT).mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault('HF_HOME',          f'{_CACHE_ROOT}/huggingface')
+    os.environ.setdefault('TRANSFORMERS_CACHE', f'{_CACHE_ROOT}/transformers')
+    os.environ.setdefault('TORCH_HOME',       f'{_CACHE_ROOT}/torch')
+    os.environ.setdefault('XDG_CACHE_HOME',   _CACHE_ROOT)
+    print(f'Caches redirected to {_CACHE_ROOT}')
+else:
+    print('No /content workspace (not on Colab); using default cache dirs.')
 
 # Force tqdm.notebook so progress bars render as Colab widgets, not raw lines
 # (matters for the long H6/H7/sycophancy passes).
@@ -120,7 +135,23 @@ print('Python:', sys.version.split()[0])
 print('Torch :', torch.__version__)
 print('CUDA  :', torch.cuda.is_available(), '|', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu only')
 if torch.cuda.is_available():
-    print('Memory:', round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1), 'GB')
+    gpu_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+    print(f'Memory: {{gpu_gb:.1f}} GB')
+    # H1 discovery does forward+backward on the full prompt; Qwen3.5-27B in
+    # NF4 can spike to ~40 GB on the backward pass and OOM on A100 40 GB.
+    if gpu_gb < 48 and not os.environ.get('MODEL_OVERRIDE'):
+        print('!! NOTE: A100 40 GB is tight for H1 backward on a 27B model.')
+        print('!! For safe H1, set MODEL_OVERRIDE="Qwen/Qwen3.5-9B" (still capable, ~5 GB NF4).')
+
+# Disk sanity. Colab Enterprise's boot disk is ~94 GB and starts ~90% full
+# (system image). /content is the 195 GB workspace where caches go.
+import shutil
+for path in ('/', '/content'):
+    if Path(path).exists():
+        s = shutil.disk_usage(path)
+        used_pct = 100 * s.used / s.total
+        warn = ' !! LOW' if (s.total - s.used) < 10 * (1024**3) else ''
+        print(f'Disk {{path:<10}}  {{s.used/1e9:6.1f}} / {{s.total/1e9:6.1f}} GB  ({{used_pct:.0f}}%){{warn}}')
 
 REPO_URL = '{REPO_URL}'
 REPO_DIR = 'diagnosticpercept'
