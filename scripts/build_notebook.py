@@ -260,25 +260,32 @@ if torch.cuda.is_available():
     print(f'GPU: {{gpu_name}}  | Memory: {{gpu_gb:.1f}} GB')
 
     # ---------- Auto-pick model based on GPU class ----------
-    # Newest Qwen line as of May 2026 is Qwen3.6 (same arch as Qwen3.5,
-    # loaded by Qwen3_5ForCausalLM). Both require the git-main transformers
-    # upgrade handled by the install cell above. Qwen3 is the deeper
-    # fallback for older transformers.
+    # Newest Qwen line as of May 2026 is Qwen3.6 (same arch as Qwen3.5).
+    # Memory budgets per GPU (we always pick the same model class for
+    # all workers in the parallel path):
+    #   H100 80GB / A100 80GB  → Qwen3.6-27B bf16 (single-GPU H1) or NF4 (multi-GPU H6)
+    #   A100 40GB              → Qwen3.6-27B NF4 (single-GPU H6); H1 uses Qwen3.5-9B
+    #   L4 24GB                → Qwen3.5-9B
+    #   T4 16GB                → Qwen3.5-4B
     if not os.environ.get('MODEL_OVERRIDE'):
         if gpu_gb >= 70:
-            recommended = 'Qwen/Qwen3.6-27B'   # bf16 fits, ~64 GB
-            os.environ['USE_4BIT'] = '0'
+            recommended = 'Qwen/Qwen3.6-27B'   # bf16 fits per GPU
+            os.environ['USE_4BIT'] = '0'        # single-GPU runs (H1) use bf16
         elif gpu_gb >= 36:
-            recommended = 'Qwen/Qwen3.5-9B'    # safe for H1 backward
+            # A100 40 GB or similar. NF4 27B fits with margin; H1 backward
+            # would OOM in bf16, so we drop H1 to 9B via H1_MODEL_OVERRIDE
+            # while H6 keeps the bigger model via the parallel NF4 path.
+            recommended = 'Qwen/Qwen3.6-27B'
+            os.environ.setdefault('H1_MODEL_OVERRIDE', 'Qwen/Qwen3.5-9B')
         elif gpu_gb >= 12:
-            recommended = 'Qwen/Qwen3.5-4B'
+            recommended = 'Qwen/Qwen3.5-9B'
         else:
-            recommended = 'Qwen/Qwen3-4B'
+            recommended = 'Qwen/Qwen3.5-4B'
         os.environ['MODEL_OVERRIDE'] = recommended
         print(f'>>> AUTO-PICK: MODEL_OVERRIDE={{recommended}}')
-        print('    (Newer transformers required; install cell handles this.')
-        print('     To pin Qwen3 (stable on older transformers):')
-        print('       os.environ["MODEL_OVERRIDE"] = "Qwen/Qwen3-32B")')
+        if 'H1_MODEL_OVERRIDE' in os.environ:
+            print(f'    H1 backward uses {{os.environ["H1_MODEL_OVERRIDE"]}}'
+                   ' (separate load for the gradient pass)')
 
     # ---------- Adaptive N_BENCH ----------
     if gpu_gb >= 70:
@@ -351,22 +358,28 @@ print(f'  Quantize 4bit : {os.environ.get("USE_4BIT", "auto")}')
 print(f'  N_BENCH       : {os.environ.get("N_BENCH", "default")}')
 print(f'  HF cache      : {os.environ.get("HF_HOME", "(default ~/.cache)")}')
 print()
-print('  Estimated wall time on this GPU (rough):')
-_gpu_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if torch.cuda.is_available() else 0
-if _gpu_gb >= 70:
-    print('    H1 discover           ~5 min')
-    print('    H6 deep (1273×3)      ~75 min')
-    print('    H7 (300 items)        ~3 min')
-    print('    H8 + sycophancy       ~15 min')
-    print('    --- TOTAL             ~1.6 hr')
-elif _gpu_gb >= 36:
-    print('    H1 discover           ~10 min')
-    print('    H6 deep (600×3)       ~110 min')
-    print('    H7 (300 items)        ~6 min')
-    print('    H8 + sycophancy       ~20 min')
-    print('    --- TOTAL             ~2.4 hr')
+print('  Estimated wall time on this hardware:')
+_n_gpu = torch.cuda.device_count() if torch.cuda.is_available() else 0
+_gpu_gb = (torch.cuda.get_device_properties(0).total_memory / 1e9) if _n_gpu else 0
+_gpu_name = torch.cuda.get_device_name(0) if _n_gpu else ''
+# H100 ≈ 1.5× A100 fwd throughput. Wall time scales by 1/n_gpu for H6.
+_is_h100 = 'H100' in _gpu_name
+_throughput_factor = 1.0 if _is_h100 else 1.5  # A100 vs H100
+_par = max(1, _n_gpu)
+print(f'  Hardware: {_n_gpu}× {_gpu_name or "CPU"}  (parallel factor {_par})')
+if _gpu_gb >= 36:
+    h1   = round(5  * _throughput_factor, 1)            # H1 stays single-GPU
+    h6   = round(75 * _throughput_factor / _par, 1)      # parallelized
+    h7   = round(3  * _throughput_factor, 1)             # single-GPU
+    syc  = round(15 * _throughput_factor, 1)             # single-GPU for now
+    total = h1 + h6 + h7 + syc
+    print(f'    H1 discover           ~{h1} min  (single GPU)')
+    print(f'    H6 deep (1273×3)      ~{h6} min  ({_par}× parallel)')
+    print(f'    H7 (300 items)        ~{h7} min  (single GPU)')
+    print(f'    H8 + sycophancy       ~{syc} min  (single GPU)')
+    print(f'    --- TOTAL             ~{total/60:.1f} hr')
 else:
-    print('    Conservative budget on small GPU — expect ~3-5 hr.')
+    print('    Small-GPU budget — auto-pick will drop model size.')
 print('=' * 62)
 """)))
 
