@@ -97,3 +97,13 @@ def test_discovery_exists(tmp_path):
     assert not discovery_exists(tmp_path)
     save_discovery(tmp_path, _disc())
     assert discovery_exists(tmp_path)
+
+
+def test_empty_neuron_lists_warn(tmp_path, capsys):
+    """A checkpoint with empty H4/H5 neuron lists warns (silent no-op ablations)."""
+    from src.checkpoint import load_discovery, save_discovery
+    save_discovery(tmp_path, _disc(halluc_neurons=[], overconf_neurons=[]))
+    load_discovery(tmp_path)
+    out = capsys.readouterr().out
+    assert "no H4 hallucination neurons" in out
+    assert "no H5 overconfidence neurons" in out

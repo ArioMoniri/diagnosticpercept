@@ -83,6 +83,24 @@ def test_benchmark_frees_main_model_before_parallel(gen):
     assert "ALL_CONDITIONS" in srcs and "CONDITIONS" in srcs
 
 
+def test_benchmark_periodic_mirror_brackets_the_run(gen):
+    """02 must start a periodic mirror, then run H6, then stop it — in order —
+    so a mid-run disconnect's partial shards reach the backend."""
+    cells = gen.build_02_benchmark()
+    srcs = _code_sources(cells)
+    start_i = next(i for i, s in enumerate(srcs) if "PeriodicMirror" in s and ".start()" in s)
+    run_i = next(i for i, s in enumerate(srcs) if "run_conditions_parallel" in s)
+    stop_i = next(i for i, s in enumerate(srcs) if "_mirror.stop(final=True)" in s)
+    assert start_i < run_i < stop_i, (start_i, run_i, stop_i)
+
+
+def test_persist_cells_guard_missing_cli(gen):
+    """restore/mirror must shutil.which-guard the sync binary, not crash on it."""
+    for name in ("01", "02", "03", "04"):
+        srcs = "\n".join(_code_sources(_all_phase_builders(gen)[name]()))
+        assert "_shutil.which" in srcs, name
+
+
 def test_no_med_model_references(gen):
     """Qwen-only: no Med42/Med43/meditron/clinical-camel anywhere in the cells."""
     banned = ("med42", "med43", "med-4", "meditron", "clinical-camel")

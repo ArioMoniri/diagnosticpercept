@@ -102,3 +102,63 @@ def test_remote_location_drive():
 def test_remote_location_local_is_none():
     from src.persist import remote_location
     assert remote_location("local") is None
+
+
+# ---- PeriodicMirror ----
+
+
+def test_periodic_mirror_syncs_then_final(monkeypatch):
+    """Thread fires at least once on a short interval, plus a final sync on stop."""
+    import threading
+    import time as _time
+
+    from src.persist import PeriodicMirror
+
+    calls = []
+    gate = threading.Event()
+
+    def fake_sync(local, remote, backend):
+        calls.append((local, remote, backend))
+        gate.set()
+
+    pm = PeriodicMirror("/local", "gs://b/results", "gcs",
+                        interval=0.05, sync_fn=fake_sync)
+    pm.start()
+    # Wait for at least one periodic tick (bounded so the test can't hang).
+    assert gate.wait(timeout=5.0), "periodic sync never fired"
+    n_periodic = len(calls)
+    pm.stop(final=True)
+    # stop(final=True) adds exactly one more sync.
+    assert len(calls) == n_periodic + 1
+    assert calls[-1] == ("/local", "gs://b/results", "gcs")
+
+
+def test_periodic_mirror_stop_without_start_does_final_only():
+    from src.persist import PeriodicMirror
+    calls = []
+    pm = PeriodicMirror("/l", "/r", "drive", interval=999,
+                        sync_fn=lambda *a: calls.append(a))
+    pm.stop(final=True)
+    assert len(calls) == 1
+
+
+def test_periodic_mirror_survives_sync_exception(capsys):
+    from src.persist import PeriodicMirror
+
+    def boom(*a):
+        raise RuntimeError("network blip")
+
+    pm = PeriodicMirror("/l", "/r", "gcs", interval=999, sync_fn=boom)
+    pm._sync_once()   # must not raise
+    out = capsys.readouterr().out
+    assert "sync failed" in out
+
+
+def test_periodic_mirror_context_manager(monkeypatch):
+    from src.persist import PeriodicMirror
+    calls = []
+    with PeriodicMirror("/l", "/r", "local", interval=999,
+                        sync_fn=lambda *a: calls.append(a)):
+        pass
+    # __exit__ → stop(final=True) → one sync.
+    assert len(calls) == 1

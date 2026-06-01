@@ -135,14 +135,31 @@ BUCKET  = os.environ.get('GCS_BUCKET') or None
 REMOTE  = remote_location(BACKEND, bucket=BUCKET) if BACKEND != 'local' else None
 print(f'Persistence backend = {BACKEND}   remote = {REMOTE}')
 
+import shutil as _shutil
+def _sync(src, dst, backend, label):
+    """Run one rsync/gsutil sync, guarding a missing CLI + first-phase noise."""
+    cmd = build_sync_cmd(src, dst, backend)
+    if _shutil.which(cmd[0]) is None:
+        print(f'!! {cmd[0]!r} not on PATH — cannot {label}. '
+              f'On Colab Enterprise gsutil is preinstalled; for Drive, rsync is.')
+        return
+    print(f'{label}:', ' '.join(cmd))
+    # capture_output so an empty-remote gsutil CommandException on phase-0
+    # restore doesn't dump a scary multi-line stderr; surface it only if it
+    # looks like a real failure.
+    r = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if r.returncode != 0 and 'does not name a directory' not in (r.stderr or ''):
+        tail = (r.stderr or '').strip().splitlines()[-3:]
+        if tail:
+            print('   (note)', ' | '.join(tail))
+
 RESULTS.mkdir(parents=True, exist_ok=True)
 if REMOTE:
     if BACKEND == 'drive':
         Path(REMOTE).mkdir(parents=True, exist_ok=True)
-    cmd = build_sync_cmd(REMOTE, str(RESULTS), BACKEND)   # remote -> local
-    print('restore:', ' '.join(cmd))
-    # check=False: on the FIRST phase the remote is empty, which is not an error.
-    subprocess.run(cmd, check=False)
+    # remote -> local. check=False semantics: on the FIRST phase the remote is
+    # empty, which is not an error.
+    _sync(REMOTE, str(RESULTS), BACKEND, 'restore')
     print('Restored results/ from', REMOTE)
 else:
     print('!! local backend: this phase will NOT see other phases\\' outputs.')
@@ -154,12 +171,11 @@ def persist_mirror_cell() -> nbf.NotebookNode:
     return code('''
 # === persist: mirror results/ back to the shared backend ===================
 # Run this LAST so the next phase's runtime can restore what this phase made.
+# (`_sync` was defined in the restore cell — same guards apply.)
 if REMOTE:
     if BACKEND == 'drive':
         Path(REMOTE).mkdir(parents=True, exist_ok=True)
-    cmd = build_sync_cmd(str(RESULTS), REMOTE, BACKEND)   # local -> remote
-    print('mirror:', ' '.join(cmd))
-    subprocess.run(cmd, check=False)
+    _sync(str(RESULTS), REMOTE, BACKEND, 'mirror')       # local -> remote
     print('Mirrored results/ →', REMOTE)
 else:
     print('local backend — results stay in /content/results only this session.')
@@ -315,6 +331,33 @@ else:
 ''')
 
 
+def periodic_mirror_start_cell() -> nbf.NotebookNode:
+    return code('''
+# === start a periodic mirror for the duration of the H6 run ================
+# The benchmark writes per-worker shards to results/h6/_gpu{rank}/ and only
+# the END-of-phase mirror would otherwise push them. A disconnect mid-run
+# would then lose all partial shards → the next runtime restarts from zero.
+# Mirroring every 3 min bounds the loss; restore is recursive so the partial
+# _gpu* shards come back and each worker resumes positionally from its shard.
+_mirror = None
+if REMOTE:
+    from src.persist import PeriodicMirror
+    _mirror = PeriodicMirror(str(RESULTS), REMOTE, BACKEND, interval=180).start()
+    print(f'Periodic mirror running every 180s → {REMOTE}')
+else:
+    print('local backend — no periodic mirror (results stay in this runtime).')
+''')
+
+
+def periodic_mirror_stop_cell() -> nbf.NotebookNode:
+    return code('''
+# === stop the periodic mirror (does one final sync) ========================
+if _mirror is not None:
+    _mirror.stop(final=True)
+    print(f'Periodic mirror stopped after {_mirror.n_syncs} syncs (+ final).')
+''')
+
+
 def sycophancy_restore_cell() -> nbf.NotebookNode:
     return code('''
 # === restore items for the sycophancy phase ================================
@@ -454,7 +497,9 @@ def build_02_benchmark() -> List[nbf.NotebookNode]:
     cells.append(md_containing("## 8. H6 — Benchmark eval under interventions"))
     cells.append(h6_setup_from_ckpt_cell())
     cells.append(free_main_model_before_parallel_cell())
+    cells.append(periodic_mirror_start_cell())
     cells.append(code_by_label("H6 — run all conditions (resumable, multi-GPU if available)"))
+    cells.append(periodic_mirror_stop_cell())
     cells.append(code_by_label("H6 — sample reasoning per condition"))
     cells.append(code_by_label("H6 — comparison table + delta plot"))
     cells.append(md_containing("## 9. Consensus-flip analysis"))

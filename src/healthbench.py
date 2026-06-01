@@ -638,8 +638,18 @@ def run_conditions(
         if jsonl_path.exists():
             with jsonl_path.open() as f:
                 for line in f:
-                    if line.strip():
+                    if not line.strip():
+                        continue
+                    try:
                         results.append(BenchmarkRow.from_dict(json.loads(line)))
+                    except (json.JSONDecodeError, ValueError):
+                        # Tolerate a truncated trailing line — can happen when a
+                        # periodic backend mirror (Colab Enterprise cross-runtime
+                        # resume) snapshots a shard mid-write. The row is re-run
+                        # on resume, so dropping the partial line is safe.
+                        print(f"[{cond_name}] skipping unparseable jsonl line "
+                              f"(likely a mid-write snapshot); will re-run it.")
+                        break
             already = len(results)
             print(f"[{cond_name}] resuming, {already} rows on disk.")
         else:

@@ -140,7 +140,21 @@ def load_discovery(results_dir: Path | str) -> Discovery:
     extra = {k: v for k, v in raw.items() if k not in known}
     if extra:
         kept.setdefault("extra", {}).update(extra)
-    return Discovery(**kept)
+    disc = Discovery(**kept)
+
+    # Soft check: the H4/H5 ablation conditions silently become no-ops if their
+    # neuron lists are empty. The save cell always writes them, so an empty list
+    # means a truncated/old checkpoint — warn loudly rather than run an empty
+    # ablation that looks like "intervention had no effect".
+    if not disc.halluc_neurons:
+        print(f"!! discovery.json has no H4 hallucination neurons — the "
+              f"h4_ablate_halluc / h4_h5_combined conditions will be no-ops. "
+              f"Re-run 01_discovery.ipynb.")
+    if not disc.overconf_neurons:
+        print(f"!! discovery.json has no H5 overconfidence neurons — the "
+              f"h5_ablate_overconf / h4_h5_combined conditions will be no-ops. "
+              f"Re-run 01_discovery.ipynb.")
+    return disc
 
 
 def discovery_exists(results_dir: Path | str) -> bool:

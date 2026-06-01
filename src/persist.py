@@ -23,8 +23,9 @@ the notebook does the actual ``subprocess`` call.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
-from typing import List, Mapping, Optional
+from typing import Callable, List, Mapping, Optional
 
 
 VALID_BACKENDS = ("gcs", "drive", "local")
@@ -95,3 +96,76 @@ def remote_location(
     if backend == "drive":
         return drive_dir(drive_root, subpath)
     return None
+
+
+class PeriodicMirror:
+    """Background thread that pushes ``local`` → ``remote`` every ``interval`` s.
+
+    The long H6 benchmark only mirrors at phase *end* by default — a mid-run
+    disconnect would lose the per-worker ``_gpu{rank}`` shards before they ever
+    reach the backend, so the next runtime can't resume them. Running this for
+    the duration of the benchmark bounds the loss to one ``interval`` and lets
+    the recursive restore bring the partial shards back for positional resume.
+
+    ``sync_fn`` is injectable so the lifecycle is unit-testable without a real
+    cloud round-trip; the default shells out to :func:`build_sync_cmd`.
+    """
+
+    def __init__(
+        self,
+        local: str,
+        remote: str,
+        backend: str,
+        interval: float = 180.0,
+        sync_fn: Optional[Callable[[str, str, str], None]] = None,
+    ):
+        self.local = local
+        self.remote = remote
+        self.backend = backend
+        self.interval = float(interval)
+        self._sync_fn = sync_fn or _default_sync
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.n_syncs = 0
+
+    def _loop(self) -> None:
+        # ``Event.wait`` returns True when set (stop requested) → exit loop;
+        # returns False on timeout → do one sync, repeat.
+        while not self._stop.wait(self.interval):
+            self._sync_once()
+
+    def _sync_once(self) -> None:
+        try:
+            self._sync_fn(self.local, self.remote, self.backend)
+            self.n_syncs += 1
+        except Exception as e:  # never let a transient sync error kill the run
+            print(f"[PeriodicMirror] sync failed (will retry): {e}")
+
+    def start(self) -> "PeriodicMirror":
+        if self._thread is not None:
+            return self
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self, final: bool = True) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval + 30)
+            self._thread = None
+        if final:
+            self._sync_once()   # capture whatever finished after the last tick
+
+    def __enter__(self) -> "PeriodicMirror":
+        return self.start()
+
+    def __exit__(self, *exc) -> None:
+        self.stop(final=True)
+
+
+def _default_sync(local: str, remote: str, backend: str) -> None:
+    """Push ``local`` → ``remote`` once (used by :class:`PeriodicMirror`)."""
+    import subprocess
+
+    cmd = build_sync_cmd(local, remote, backend)
+    subprocess.run(cmd, check=False, capture_output=True)
