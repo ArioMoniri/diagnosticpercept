@@ -164,8 +164,19 @@ class PeriodicMirror:
 
 
 def _default_sync(local: str, remote: str, backend: str) -> None:
-    """Push ``local`` → ``remote`` once (used by :class:`PeriodicMirror`)."""
+    """Push ``local`` → ``remote`` once (used by :class:`PeriodicMirror`).
+
+    Guards a missing CLI so a misconfigured backend doesn't spam a
+    ``FileNotFoundError`` traceback every interval — the periodic loop catches
+    it anyway, but the guard keeps the log clean and consistent with the
+    notebook's ``_sync`` helper.
+    """
+    import shutil
     import subprocess
 
     cmd = build_sync_cmd(local, remote, backend)
+    if shutil.which(cmd[0]) is None:
+        raise FileNotFoundError(
+            f"{cmd[0]!r} not on PATH — cannot mirror to {remote!r}."
+        )
     subprocess.run(cmd, check=False, capture_output=True)

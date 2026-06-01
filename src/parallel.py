@@ -156,6 +156,75 @@ def _split_round_robin(items: Sequence, n: int) -> List[List]:
     return chunks
 
 
+def _qid_of(item) -> Optional[str]:
+    if hasattr(item, "q_id"):
+        return item.q_id
+    if isinstance(item, dict):
+        return item.get("q_id")
+    return None
+
+
+def _reseed_shards(
+    out_dir: Path, items: Sequence, condition_names, n_gpus: int,
+) -> None:
+    """Redistribute already-done rows into the CURRENT ``n_gpus`` shard layout.
+
+    Cross-runtime resume (Colab Enterprise) restores ``results/h6/`` from the
+    backend, but the per-worker ``_gpu{rank}`` shards were written under the
+    *previous* run's worker count. If this runtime has a different GPU count,
+    the round-robin partition changes and a worker's shard no longer matches
+    the items it will now process. We rebuild every shard from the union of all
+    previously-completed rows (the merged ``{cond}.jsonl`` + any ``_gpu*``
+    shards), placing each done row in the rank that now owns its ``q_id``.
+
+    Combined with q_id-based resume in :func:`healthbench.run_conditions`, this
+    makes resume correct under any worker-count change. No-op on a fresh run.
+    """
+    out_dir = Path(out_dir)
+    qid_to_rank = {}
+    for idx, it in enumerate(items):
+        qid = _qid_of(it)
+        if qid is not None:
+            qid_to_rank[qid] = idx % n_gpus
+
+    for cond in condition_names:
+        # Collect done rows from the merged file + every existing shard first
+        # (before overwriting any shard), de-duplicating by q_id.
+        seen: Dict[str, Dict] = {}
+        sources = [out_dir / f"{cond}.jsonl"]
+        sources += sorted(out_dir.glob(f"_gpu*/{cond}.jsonl"))
+        for src in sources:
+            if not src.exists():
+                continue
+            for line in src.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # tolerate a truncated mid-write line
+                qid = row.get("q_id")
+                if qid in qid_to_rank and qid not in seen:
+                    seen[qid] = row
+        if not seen:
+            continue
+        by_rank: Dict[int, List[Dict]] = {r: [] for r in range(n_gpus)}
+        for qid, row in seen.items():
+            by_rank[qid_to_rank[qid]].append(row)
+        for r in range(n_gpus):
+            shard_dir = out_dir / f"_gpu{r}"
+            shard_dir.mkdir(parents=True, exist_ok=True)
+            lines = [json.dumps(row) for row in by_rank[r]]
+            (shard_dir / f"{cond}.jsonl").write_text(
+                "\n".join(lines) + ("\n" if lines else "")
+            )
+        print(f"  [reseed] {cond}: {len(seen)} done rows → {n_gpus} shards")
+
+    (out_dir / "_dp_meta.json").write_text(
+        json.dumps({"n_gpus": n_gpus, "n_items": len(list(items))})
+    )
+
+
 def _items_to_json(items) -> List[Dict]:
     out = []
     for it in items:
@@ -199,6 +268,11 @@ def run_conditions_parallel(
     chunks_json = [_items_to_json(c) for c in chunks]
     for i, c in enumerate(chunks):
         print(f"  GPU{i}: {len(c)} items")
+
+    # Cross-runtime resume safety: if a prior (possibly different-worker-count)
+    # run left shards/merged jsonls, redistribute the done rows into THIS run's
+    # layout so each worker resumes the correct items (q_id-based).
+    _reseed_shards(out_dir, list(items), list(condition_specs.keys()), n_gpus)
 
     # Spawn processes (spawn ctx for CUDA safety).
     ctx = mp.get_context("spawn")

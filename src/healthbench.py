@@ -634,7 +634,7 @@ def run_conditions(
         results: List[BenchmarkRow] = []
         jsonl_path = out_dir / f"{cond_name}.jsonl"
         # Resume: if jsonl exists with N records, skip those.
-        already = 0
+        done_qids: set = set()
         if jsonl_path.exists():
             with jsonl_path.open() as f:
                 for line in f:
@@ -650,12 +650,18 @@ def run_conditions(
                         print(f"[{cond_name}] skipping unparseable jsonl line "
                               f"(likely a mid-write snapshot); will re-run it.")
                         break
-            already = len(results)
-            print(f"[{cond_name}] resuming, {already} rows on disk.")
+            done_qids = {r.q_id for r in results}
+            print(f"[{cond_name}] resuming, {len(done_qids)} rows done on disk.")
         else:
             jsonl_path.write_text("")  # touch
 
-        for i, item in enumerate(tqdm(items[already:], desc=cond_name, leave=False)):
+        # Resume by q_id, NOT by row count: under the multi-GPU path a shard may
+        # be re-seeded into a different layout when the worker count changes
+        # across runtimes (Colab Enterprise resume), so positional `items[N:]`
+        # could skip the wrong items. Skipping already-present q_ids is robust
+        # to order, sharding, and worker-count changes.
+        todo = [it for it in items if it.q_id not in done_qids]
+        for i, item in enumerate(tqdm(todo, desc=cond_name, leave=False)):
             ctx = factory() if factory is not None else None
             row = run_one(lm, item, cond_name, intervention_ctx=ctx,
                           prompt_template=prompt_template)
