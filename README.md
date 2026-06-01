@@ -23,6 +23,26 @@ on Google Cloud — see [`docs/colab-enterprise.md`](docs/colab-enterprise.md)
 for the runtime template config and a `scripts/submit_to_vertex.py` batch
 runner.
 
+### Per-phase notebooks (recommended on 4× A100)
+
+The single notebook redoes cheap discovery (H1–H5) every time the expensive
+benchmark (H6/H7) dies. On Colab Enterprise, prefer the **split phases** under
+[`notebooks/split/`](notebooks/split/), each a separate runtime that hands
+state forward through `results/` mirrored to a GCS bucket (`GCS_BUCKET`) or
+Drive:
+
+```
+00_setup_check → 01_discovery → 02_benchmark → 03_scale → 04_sycophancy
+```
+
+`01` writes `results/discovery.json` (the neuron coordinates); `02`–`04`
+restore it, so the multi-hour benchmark never re-runs discovery. Every phase
+is resumable. Regenerate with `python scripts/build_split_notebooks.py`
+(after `python scripts/build_notebook.py`). Models stay **Qwen3-only**
+(32B→14B→8B→4B by GPU memory); the 4× A100 path forces NF4 data-parallel
+workers and frees the main model first so two copies never collide on one
+40 GB card.
+
 ## Hypotheses
 
 | ID | Claim | Method |

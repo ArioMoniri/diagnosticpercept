@@ -77,15 +77,58 @@ within minutes for these GPU families.
 Runtime templates → click the template → **Create runtime**. Wait ~2 min
 for it to come up green.
 
-### A3. Import the notebook from GitHub
+### A3. Import the notebook(s) from GitHub
 
-Notebooks → **My notebooks → Import → URL**:
+Notebooks → **My notebooks → Import → URL**, then paste one of the links
+below. (The raw `raw.githubusercontent.com/...` form works too — Colab
+Enterprise's importer accepts either.)
+
+**Recommended — the split, per-phase notebooks** (one Colab Enterprise
+runtime each, so a disconnect in the expensive H6/H7 stage never re-runs the
+cheap H1–H5 discovery):
+
+```
+https://github.com/ArioMoniri/diagnosticpercept/blob/main/notebooks/split/00_setup_check.ipynb
+https://github.com/ArioMoniri/diagnosticpercept/blob/main/notebooks/split/01_discovery.ipynb
+https://github.com/ArioMoniri/diagnosticpercept/blob/main/notebooks/split/02_benchmark.ipynb
+https://github.com/ArioMoniri/diagnosticpercept/blob/main/notebooks/split/03_scale.ipynb
+https://github.com/ArioMoniri/diagnosticpercept/blob/main/notebooks/split/04_sycophancy.ipynb
+```
+
+**Single monolith** (everything in one session — fine on an A100-80/H100
+where the whole sweep fits one ~2 h connection):
 
 ```
 https://github.com/ArioMoniri/diagnosticpercept/blob/main/notebooks/diagnostic_percept.ipynb
 ```
 
-(Or paste the raw URL — both work in Colab Enterprise's importer.)
+#### How the split phases share state
+
+Each phase runs in its **own** runtime with a fresh `/content`, so artifacts
+are handed forward through `results/` mirrored to a shared backend. Set this
+**once at the top of every phase** (recommended on Enterprise — a GCS bucket,
+since gsutil is preinstalled and the runtime SA already has access):
+
+```python
+%env GCS_BUCKET=gs://your-bucket-name
+```
+
+(Free-Colab fallback: if no `GCS_BUCKET` is set, the notebook auto-mounts
+Google Drive and uses `/content/drive/MyDrive/diagnosticpercept/results`.)
+
+Run order and what each writes:
+
+| Phase | Notebook | GPUs used | ~wall (4× A100-40) | Produces |
+|-------|----------|-----------|--------------------|----------|
+| 0 | `00_setup_check` | 1 | ~5 min | health check only |
+| 1 | `01_discovery` | 1 | ~25 min | `results/discovery.json` + H1–H5 |
+| 2 | `02_benchmark` | 4 (data-parallel) | ~2 h | `results/h6/` + consensus |
+| 3 | `03_scale` | 1 | ~1.5 h | `results/h7,h8,h6_medmcqa/` |
+| 4 | `04_sycophancy` | 1 | ~45 min | `results/sycophancy/` |
+
+Every phase is **resumable**: re-running after a disconnect restores
+`results/` from the backend and skips finished work (the H-cells load their
+own cached JSON; H6 resumes from per-condition jsonls).
 
 ### A4. Connect notebook → runtime
 

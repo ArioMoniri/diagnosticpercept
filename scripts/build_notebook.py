@@ -1266,7 +1266,7 @@ if N_GPUS > 1:
         if path.exists():
             for line in path.read_text().splitlines():
                 if line.strip():
-                    rows.append(BenchmarkRow(**json.loads(line)))
+                    rows.append(BenchmarkRow.from_dict(json.loads(line)))
         all_results[cond] = rows
     CONDITIONS = condition_specs   # so downstream cells iterate the right keys
 else:
