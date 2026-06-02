@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import time
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -433,6 +434,14 @@ def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: i
     letter, and ``generated_ids[i]`` is the letter token itself. Returns
     ``None`` if "Answer:" never appears in the generation.
     """
+    # Fast path: if "answer" never appears in the full decode, skip the O(N²)
+    # cumulative-decode loop entirely (the model didn't honor the format).
+    # Big win on non-complying generations that would otherwise decode every
+    # prefix up to max_search.
+    full_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    if "answer" not in full_text.lower():
+        return None
+
     # Cumulative decode of generated_ids[:i+1] — robust to BPE byte-fallback
     # tokens (e.g. multi-byte chars in clinical text like —, μ, β) that
     # split across token boundaries. Per-token decode could lose those.
@@ -454,33 +463,94 @@ def _find_answer_token_pos(tokenizer, generated_ids: torch.Tensor, max_search: i
 find_answer_token_pos = _find_answer_token_pos
 
 
+# Default generation cap. The model only needs to emit a short reasoning chain
+# plus "Answer: X" — 512 tokens (the old default) meant every question ran to
+# the cap, ~20-25 s on a 32B model, making the 1273×6 benchmark take a full
+# day. 256 + the early-stop below brings the typical question to ~100 tokens.
+# Override globally with DP_MAX_NEW_TOKENS without editing call sites.
+_DEFAULT_MAX_NEW_TOKENS = int(os.environ.get("DP_MAX_NEW_TOKENS", "256"))
+
+# Matches "Answer: X" / "answer - x" once the letter has been emitted.
+_ANSWER_STOP_RE = re.compile(r"answer\s*[:\-]\s*\(?[A-E]", re.IGNORECASE)
+
+
+class _AnswerStopping:
+    """``StoppingCriteria`` that halts greedy decoding ~``extra`` tokens after
+    "Answer: X" appears.
+
+    This is THE performance fix for H6: without it, ``generate`` runs to
+    ``max_new_tokens`` on every question because the model rarely emits EOS
+    after the letter. We decode only the trailing ``tail`` tokens each step
+    (cheap) and stop a couple tokens past the match so the answer token and its
+    logit distribution are captured in ``gen.scores``. Batch-size 1 only —
+    which is exactly how H6/H7/H8/sycophancy call ``generate``.
+    """
+
+    def __init__(self, tokenizer, prompt_len: int, tail: int = 24, extra: int = 2):
+        self.tok = tokenizer
+        self.prompt_len = int(prompt_len)
+        self.tail = int(tail)
+        self.extra = int(extra)
+        self._hit_at: Optional[int] = None
+
+    def __call__(self, input_ids, scores=None, **kwargs) -> bool:
+        gen_len = int(input_ids.shape[1]) - self.prompt_len
+        if gen_len < 2:
+            return False
+        start = max(self.prompt_len, int(input_ids.shape[1]) - self.tail)
+        text = self.tok.decode(input_ids[0, start:], skip_special_tokens=True)
+        if _ANSWER_STOP_RE.search(text):
+            if self._hit_at is None:
+                self._hit_at = gen_len
+            if gen_len >= self._hit_at + self.extra:
+                return True
+        return False
+
+
+def _build_stopping(tok, prompt_len: int):
+    """Best-effort StoppingCriteriaList; ``None`` if transformers lacks it."""
+    try:
+        from transformers import StoppingCriteriaList
+        return StoppingCriteriaList([_AnswerStopping(tok, prompt_len)])
+    except Exception:
+        return None
+
+
 @torch.no_grad()
 def run_one(
     lm: LoadedModel,
     item: MCQItem,
     condition: str,
     intervention_ctx=None,
-    max_new_tokens: int = 512,
+    max_new_tokens: int = 0,
     prompt_template: Optional[str] = None,
 ) -> BenchmarkRow:
     """One forward+generate under a single intervention context.
 
-    Generates up to ``max_new_tokens`` so the model can lay out its reasoning
-    *before* committing to a letter (the prompt template asks for both).
+    Generates up to ``max_new_tokens`` (default :data:`_DEFAULT_MAX_NEW_TOKENS`,
+    or ``DP_MAX_NEW_TOKENS``) so the model can lay out its reasoning *before*
+    committing to a letter — but an early-stop criterion halts shortly after
+    "Answer: X" so the typical question costs ~100 tokens, not the full cap.
 
     ``prompt_template`` selects one of the M4 ensemble paraphrases (see
     :data:`_PROMPT_TEMPLATE_ENSEMBLE`); ``None`` keeps the canonical wording.
     """
     tok = lm.tokenizer
+    if max_new_tokens and max_new_tokens > 0:
+        cap = int(max_new_tokens)
+    else:
+        cap = _DEFAULT_MAX_NEW_TOKENS
     prompt = render_prompt(item, template=prompt_template)
     enc = tok(prompt, return_tensors="pt").to(lm.device)
 
+    stopping = _build_stopping(tok, enc.input_ids.shape[1])
     ctx = intervention_ctx if intervention_ctx is not None else nullcontext()
     with ctx:
         gen = lm.model.generate(
-            **enc, max_new_tokens=max_new_tokens, do_sample=False,
+            **enc, max_new_tokens=cap, do_sample=False,
             pad_token_id=tok.pad_token_id,
             output_scores=True, return_dict_in_generate=True,
+            stopping_criteria=stopping,
         )
     clear_h(lm.layers)
 
@@ -661,6 +731,10 @@ def run_conditions(
         # could skip the wrong items. Skipping already-present q_ids is robust
         # to order, sharding, and worker-count changes.
         todo = [it for it in items if it.q_id not in done_qids]
+        n_todo = len(todo)
+        print(f"[{cond_name}] {n_todo} to run "
+              f"({len(done_qids)} already done).", flush=True)
+        _t0 = time.time()
         for i, item in enumerate(tqdm(todo, desc=cond_name, leave=False)):
             ctx = factory() if factory is not None else None
             row = run_one(lm, item, cond_name, intervention_ctx=ctx,
@@ -668,8 +742,18 @@ def run_conditions(
             results.append(row)
             with jsonl_path.open("a") as f:
                 f.write(json.dumps(asdict(row)) + "\n")
-            if (i + 1) % save_every == 0:
-                pass  # already streaming; placeholder for future checkpointing
+            # Heartbeat: an explicit stdout line every save_every questions, so
+            # the run is never a silent black box (tqdm widgets don't render in
+            # the spawned data-parallel workers, and a stuck run otherwise looks
+            # identical to a slow one). Prints rate + ETA for THIS condition.
+            if (i + 1) % save_every == 0 or (i + 1) == n_todo:
+                el = max(1e-6, time.time() - _t0)
+                rate = (i + 1) / el
+                eta_min = (n_todo - (i + 1)) / rate / 60 if rate > 0 else 0.0
+                print(f"[{cond_name}] {i + 1}/{n_todo}  "
+                      f"{rate:.2f} q/s  ETA {eta_min:.0f} min  "
+                      f"(found_ans={sum(int(r.answer_pos_found) for r in results[-save_every:])}"
+                      f"/{min(save_every, i + 1)})", flush=True)
 
         all_results[cond_name] = results
 

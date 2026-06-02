@@ -290,6 +290,31 @@ print(f'Rebuilt {len(CONDITIONS)} base conditions for H6 pass-2.')
 ''')
 
 
+def h6_timing_probe_cell() -> nbf.NotebookNode:
+    return code('''
+# === H6 — wall-time probe (times 2 questions before the full run) ==========
+# This prints an HONEST estimate so a slow config never silently eats 24 h.
+# It runs on the main model (still loaded here, before the free-for-parallel
+# cell). With the early-stop fix a question is ~a few seconds, not ~25 s.
+import time as _time
+from src.healthbench import run_one
+_pn = min(2, len(items))
+_t = _time.time()
+for _it in items[:_pn]:
+    _ = run_one(lm, _it, 'baseline')
+_per_q = (_time.time() - _t) / max(1, _pn)
+_ng = max(1, torch.cuda.device_count() if torch.cuda.is_available() else 1)
+_est_h = _per_q * len(items) * len(CONDITIONS) / _ng / 3600
+print(f'~{_per_q:.1f}s/question  →  est H6 wall-time {_est_h:.1f} h '
+      f'for {len(items)} questions × {len(CONDITIONS)} conditions on {_ng} GPU(s)')
+if _est_h > 3:
+    print('!! >3 h. For a first pass set a smaller N and re-run THIS notebook:')
+    print('!!     %env N_BENCH=300        (then Runtime → Run all)')
+    print('!! The run is resumable, so you can scale N_BENCH back up later.')
+del _t, _per_q, _est_h
+''')
+
+
 def free_main_model_before_parallel_cell() -> nbf.NotebookNode:
     return code('''
 # === free the main model before the multi-GPU H6 run =======================
@@ -496,6 +521,7 @@ def build_02_benchmark() -> List[nbf.NotebookNode]:
     cells.append(persist_restore_cell())
     cells.append(md_containing("## 8. H6 — Benchmark eval under interventions"))
     cells.append(h6_setup_from_ckpt_cell())
+    cells.append(h6_timing_probe_cell())
     cells.append(free_main_model_before_parallel_cell())
     cells.append(periodic_mirror_start_cell())
     cells.append(code_by_label("H6 — run all conditions (resumable, multi-GPU if available)"))

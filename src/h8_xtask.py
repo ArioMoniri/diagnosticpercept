@@ -44,7 +44,8 @@ from tqdm.auto import tqdm
 
 from .calibration import CONFIDENT_TOKENS, UNSURE_TOKENS, _gather_token_ids
 from .healthbench import (
-    MCQItem, find_answer_token_pos, _letter_token_ids, render_prompt,
+    MCQItem, _build_stopping, find_answer_token_pos, _letter_token_ids,
+    render_prompt,
 )
 from .model import LoadedModel, clear_h
 
@@ -124,6 +125,7 @@ def collect_xtask(
             **enc, max_new_tokens=max_new_tokens_mcq, do_sample=False,
             pad_token_id=tok.pad_token_id,
             output_scores=True, return_dict_in_generate=True,
+            stopping_criteria=_build_stopping(tok, enc.input_ids.shape[1]),
         )
         clear_h(lm.layers)
 

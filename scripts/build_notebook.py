@@ -1218,10 +1218,38 @@ else:
 print(f'\\nMode = {H6_MODE} → {len(CONDITIONS)} conditions × {len(items)} questions')
 """)))
 
+cells.append(code(wrap("H6 — wall-time probe (2 questions → honest estimate)", """
+# Times 2 questions on the loaded model so a slow config never silently eats
+# 24 h. With the early-stop fix a question is a few seconds, not ~25 s.
+import time as _time
+from src.healthbench import run_one
+_pn = min(2, len(items))
+_t = _time.time()
+for _it in items[:_pn]:
+    _ = run_one(lm, _it, 'baseline')
+_per_q = (_time.time() - _t) / max(1, _pn)
+_ng = max(1, torch.cuda.device_count() if torch.cuda.is_available() else 1)
+_est_h = _per_q * len(items) * len(CONDITIONS) / _ng / 3600
+print(f'~{_per_q:.1f}s/question → est H6 wall-time {_est_h:.1f} h '
+      f'for {len(items)}×{len(CONDITIONS)} on {_ng} GPU(s)')
+if _est_h > 3:
+    print('!! >3 h — for a first pass set  %env N_BENCH=300  then Run all '
+          '(resumable; scale back up later).')
+del _t, _per_q, _est_h
+""")))
+
 cells.append(code(wrap("H6 — run all conditions (resumable, multi-GPU if available)", """
-# Wall-time estimate:
-#   single GPU H100   1273×3  ≈ 75 min
-#   4× H100 parallel  1273×3  ≈ 20 min  (each GPU sees ~318 items × 3)
+# Wall-time depends almost entirely on tokens generated per question. With the
+# early-stop criterion (halts just after "Answer: X") a question is a few
+# seconds, so:
+#   single 80GB GPU   1273×3  ≈ 1.5-3 h   (NF4/bf16 32B)
+#   4× A100-40 parallel 1273×6 ≈ 1.5-2 h  (each GPU ~318 items)
+# WITHOUT early-stop (the old default) every question ran to 512 tokens ≈ 25 s,
+# making this 20+ h — if you see that, your src/ is stale: re-run the env-check
+# cell (it git-resets to origin/main) to pull the fix.
+#
+# The probe cell above prints an honest estimate for YOUR config. If it says
+# >3 h, set `%env N_BENCH=300` and Run-all for a fast first pass (resumable).
 #
 # If multiple GPUs are visible we partition items round-robin and spawn
 # one worker process per GPU. Each worker loads its own model copy and
