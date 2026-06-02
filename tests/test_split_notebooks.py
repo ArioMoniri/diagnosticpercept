@@ -110,6 +110,15 @@ def test_no_med_model_references(gen):
             assert b not in blob, f"phase {name} references banned model {b!r}"
 
 
+def test_committed_split_notebooks_are_code_only():
+    """User requirement: no markdown cells — every cell must be code."""
+    split_dir = ROOT / "notebooks" / "split"
+    for p in split_dir.glob("*.ipynb"):
+        nb = nbf.read(p, as_version=4)
+        md_cells = [c for c in nb.cells if c.cell_type == "markdown"]
+        assert md_cells == [], f"{p.name} has {len(md_cells)} markdown cell(s)"
+
+
 def test_committed_split_notebooks_valid_json():
     split_dir = ROOT / "notebooks" / "split"
     expected = {

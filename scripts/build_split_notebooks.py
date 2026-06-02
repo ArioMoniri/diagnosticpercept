@@ -411,22 +411,34 @@ NB_META = {
 
 
 def _title(phase_no: str, name: str, blurb: str) -> nbf.NotebookNode:
-    return md(
-        f"# Diagnostic Percept — {phase_no} · {name}\n\n"
-        f"{blurb}\n\n"
-        f"**Cross-phase state** is shared through `results/` mirrored to a GCS "
-        f"bucket (set `GCS_BUCKET`) or Google Drive. Run the phases in order: "
-        f"`00 → 01 → 02 → 03 → 04`. Each is a *separate* Colab Enterprise "
-        f"runtime; the persistence cells restore the previous phase's outputs.\n\n"
-        f"Models are **Qwen3 only** (32B → 14B → 8B → 4B auto-picked by GPU "
-        f"memory); no Med42/Med43 anywhere."
+    """Banner as a CODE cell (no markdown cells in these notebooks — the user
+    asked for code-only; orienting text lives in comments + a print)."""
+    blurb_lines = "\n".join("# " + ln for ln in _wrap_comment(blurb))
+    return code(
+        "# ==========================================================================\n"
+        f"# Diagnostic Percept — {phase_no} · {name}\n"
+        f"{blurb_lines}\n"
+        "# Run phases in order 00 -> 01 -> 02 -> 03 -> 04, each a separate Colab\n"
+        "# Enterprise runtime. State is shared through results/ mirrored to a GCS\n"
+        "# bucket (set GCS_BUCKET) or Drive. Qwen3 only (32B/14B/8B/4B by GPU mem).\n"
+        "# ==========================================================================\n"
+        f"print('=== Diagnostic Percept | {phase_no} {name} ===')"
     )
 
 
+def _wrap_comment(text: str, width: int = 74):
+    import textwrap
+    return textwrap.wrap(text, width=width) or [""]
+
+
 def write_nb(fname: str, cells: List[nbf.NotebookNode]) -> Path:
+    # Code-only notebooks: drop every markdown cell. Section context is already
+    # carried by the `# === label ===` comment at the top of each code cell, so
+    # nothing executable is lost.
+    code_cells = [c for c in cells if c.cell_type == "code"]
     nb = nbf.v4.new_notebook()
     nb.metadata = NB_META
-    nb.cells = cells
+    nb.cells = code_cells
     out = OUT_DIR / fname
     nbf.write(nb, out)
     return out
