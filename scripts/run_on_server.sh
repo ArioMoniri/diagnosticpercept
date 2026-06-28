@@ -139,12 +139,24 @@ if ! python -c "import torch, bitsandbytes, transformers, datasets, scipy, sklea
   python -m pip install -q --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" torch \
     || die "torch ($TORCH_CUDA) install failed. Check network / try TORCH_CUDA=cu121 or cu126."
   python -m pip install -q \
-    "transformers>=4.53" "tokenizers>=0.20" "accelerate>=0.34" "bitsandbytes>=0.43" \
+    "transformers>=4.53" "tokenizers>=0.20" "accelerate>=0.34" "bitsandbytes>=0.45" \
     "datasets>=2.20" "scipy>=1.11" "scikit-learn>=1.3" "matplotlib>=3.7" "tqdm>=4.66" \
     "safetensors>=0.4" "huggingface_hub>=0.24" \
     || die "pip install of the ML libs failed — see $BOOTLOG for the failing package."
 fi
+# Ensure a recent bitsandbytes even on a reused venv (older builds lack the
+# Hopper/sm_90 + CUDA-12.x backend that Qwen3-32B NF4 needs on an H200). Cheap
+# no-op if already current. NF4 failure is non-fatal — bf16 fallback handles it.
+python -m pip install -q -U "bitsandbytes>=0.45" 2>/dev/null || true
 python -c "import torch;print('torch',torch.__version__,'cuda',torch.cuda.is_available(),torch.version.cuda)"
+# bitsandbytes status (visibility only — the run auto-falls back to bf16 if NF4 breaks).
+python - 2>&1 <<'PYBNB' | head -3 || true
+try:
+    import bitsandbytes as bnb, torch
+    print("bitsandbytes", getattr(bnb, "__version__", "?"), "| torch.cuda", torch.version.cuda)
+except Exception as e:
+    print("bitsandbytes import FAILED:", type(e).__name__, e)
+PYBNB
 # Hard gate: torch must see CUDA. On a MIG box the instance is often invisible
 # until CUDA_VISIBLE_DEVICES names the MIG UUID — try that before giving up.
 if ! python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
@@ -211,12 +223,42 @@ fi
 # --- run the pipeline --------------------------------------------------------
 say "Running the full pipeline (this is the long part)"
 cd "$REPO"
-# Bootstrap logs use a distinct prefix so they can never be clobbered by files
-# the pipeline itself writes under results/.
-set +e
-python scripts/run_all.py 2>&1 | tee "$FINAL/_bootstrap_run.log"
-RUN_RC=${PIPESTATUS[0]}
-set -e
+RUNLOG="$FINAL/_bootstrap_run.log"
+: > "$RUNLOG"     # truncate so the bnb-failure grep below only sees THIS run
+
+run_pipeline() {
+  set +e
+  python scripts/run_all.py 2>&1 | tee -a "$RUNLOG"
+  RUN_RC=${PIPESTATUS[0]}
+  set -e
+}
+
+# Pre-flight: if 4-bit is requested but bitsandbytes isn't actually usable here,
+# switch to bf16 NOW so we don't waste a ~18 GB 32B download on a doomed NF4
+# load. (The post-run fallback below still covers the case where this check
+# passes but the real 4-bit load fails.)
+if [ "${USE_4BIT:-1}" = "1" ]; then
+  BNB_OK=$(python -c "from transformers.utils import is_bitsandbytes_available as f; print(1 if f() else 0)" 2>/dev/null || echo 0)
+  if [ "$BNB_OK" != "1" ]; then
+    say "bitsandbytes not usable here — using bf16 ${BF16_MODEL:-Qwen/Qwen3-14B} (avoids a wasted 32B download)"
+    export USE_4BIT=0
+    export MODEL_OVERRIDE="${BF16_MODEL:-Qwen/Qwen3-14B}"
+  fi
+fi
+
+run_pipeline
+# Auto-fallback: if the NF4/bitsandbytes path failed to even load the model
+# (no discovery.json AND a bitsandbytes-flavoured error in the log), retry in
+# bf16 — which uses NO bitsandbytes. 14B bf16 (~28 GB) fits the 71 GB MIG slice
+# with room for the discovery backward pass. Override the fallback model with
+# BF16_MODEL=Qwen/Qwen3-32B if you have >70 GB free for bf16-32B.
+if [ ! -f "$RESULTS_DIR/discovery.json" ] && \
+   grep -qiE "bitsandbytes|validate_bnb|4-?bit|quantiz" "$RUNLOG"; then
+  say "NF4/bitsandbytes path failed — falling back to bf16 ${BF16_MODEL:-Qwen/Qwen3-14B} (no bitsandbytes)"
+  export USE_4BIT=0
+  export MODEL_OVERRIDE="${BF16_MODEL:-Qwen/Qwen3-14B}"
+  run_pipeline
+fi
 echo "run_all.py process exit code: $RUN_RC  (note: stage failures are logged, not fatal)"
 
 # --- analyze -----------------------------------------------------------------
