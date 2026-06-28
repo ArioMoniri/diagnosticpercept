@@ -68,17 +68,28 @@ cleanup() {
   fi
 }
 
+# Persistent log of EVERYTHING from here on (survives a tmux/SSH close, unlike
+# the terminal scrollback). If the run dies early, read this file.
+BOOTLOG="$HOME/dp_bootstrap.log"
+exec > >(tee -a "$BOOTLOG") 2>&1
+echo "================ run starting $(date -u +%Y-%m-%dT%H:%M:%SZ) ================"
+
 say "Diagnostic Percept server run — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "MODEL=$MODEL  N_BENCH=$N_BENCH  USE_4BIT=$USE_4BIT  KEEP_MODEL=$KEEP_MODEL"
-echo "WORK=$WORK  VENV=$VENV  FINAL=$FINAL"
+echo "WORK=$WORK  VENV=$VENV  FINAL=$FINAL  log=$BOOTLOG"
 
 # --- GPU check ---------------------------------------------------------------
 say "GPU"
 if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null \
-    || nvidia-smi -L || true
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || true
+  nvidia-smi -L 2>/dev/null || true
+  # MIG: a MIG instance is usually NOT visible to a CUDA process unless
+  # CUDA_VISIBLE_DEVICES names the MIG UUID. Capture the first MIG UUID now so
+  # we can point torch at it if plain detection fails (below).
+  MIG_UUID="$(nvidia-smi -L 2>/dev/null | grep -oE 'MIG-[0-9a-fA-F-]+' | head -1 || true)"
+  [ -n "$MIG_UUID" ] && echo "Detected MIG instance: $MIG_UUID"
 else
-  echo "!! nvidia-smi not found — is this a GPU box? Continuing, but the model load will fail without CUDA."
+  echo "!! nvidia-smi not found — is this a GPU box? The model load will fail without CUDA."
 fi
 
 # --- optional HF token -------------------------------------------------------
@@ -122,13 +133,26 @@ if ! python -c "import torch, bitsandbytes, transformers, datasets, scipy, sklea
   python -m pip install -q \
     "transformers>=4.53" "tokenizers>=0.20" "accelerate>=0.34" "bitsandbytes>=0.43" \
     "datasets>=2.20" "scipy>=1.11" "scikit-learn>=1.3" "matplotlib>=3.7" "tqdm>=4.66" \
-    "safetensors>=0.4" "huggingface_hub>=0.24"
+    "safetensors>=0.4" "huggingface_hub>=0.24" \
+    || die "pip install of the ML libs failed — see $BOOTLOG for the failing package."
 fi
 python -c "import torch;print('torch',torch.__version__,'cuda',torch.cuda.is_available(),torch.version.cuda)"
-# Hard gate: a CPU-only torch here means the install silently degraded — abort
-# rather than crawl for hours or die deep inside model load.
-python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
-  || die "torch reports CUDA unavailable. A CPU build was installed or the GPU isn't visible. Aborting before the long run."
+# Hard gate: torch must see CUDA. On a MIG box the instance is often invisible
+# until CUDA_VISIBLE_DEVICES names the MIG UUID — try that before giving up.
+if ! python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)"; then
+  if [ -n "${MIG_UUID:-}" ]; then
+    export CUDA_VISIBLE_DEVICES="$MIG_UUID"
+    echo "CUDA not visible — retrying with CUDA_VISIBLE_DEVICES=$MIG_UUID (MIG)"
+  fi
+  python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" || die \
+"torch reports CUDA unavailable.
+  - If this is a MIG GPU, set the instance UUID and re-run:
+      export CUDA_VISIBLE_DEVICES=\$(nvidia-smi -L | grep -oE 'MIG-[0-9a-fA-F-]+' | head -1)
+      bash run_on_server.sh
+  - Otherwise a CPU-only torch was installed (try TORCH_CUDA=cu126 or cu121) or
+    the driver/container doesn't expose the GPU. See $BOOTLOG."
+fi
+echo "CUDA OK (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<all>})"
 
 # --- clone (or reuse for resume) --------------------------------------------
 say "Repository"

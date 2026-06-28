@@ -41,9 +41,12 @@ def test_server_script_bash_syntax_and_safety_rails():
     r = subprocess.run(["bash", "-n", str(sh)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     text = sh.read_text()
-    # CUDA must be enforced (no silent CPU torch).
+    # CUDA must be enforced (no silent CPU torch) and be MIG-aware.
     assert "torch.cuda.is_available()" in text
-    assert "Aborting before the long run" in text
+    assert "torch reports CUDA unavailable" in text
+    assert "CUDA_VISIBLE_DEVICES" in text and "MIG-" in text
+    # Everything is logged to a persistent file (survives a tmux/SSH close).
+    assert "dp_bootstrap.log" in text and "exec >" in text
     # Cleanup must be a trap (runs on success+failure) with a WORK value-guard.
     assert "trap cleanup EXIT" in text
     assert 'refusing to rm' in text
