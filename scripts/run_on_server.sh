@@ -99,8 +99,16 @@ if [ -z "${HF_TOKEN:-}" ] && [ -t 0 ]; then
   echo "rate limits. Paste one (hf_...) or just press Enter to skip:"
   read -r -p "HF_TOKEN: " HF_TOKEN || true
 fi
-export HF_TOKEN="${HF_TOKEN:-}"
-[ -n "$HF_TOKEN" ] && echo "Using provided HF token." || echo "No HF token (fine)."
+# Only export HF_TOKEN if it's non-empty. An EMPTY token makes huggingface_hub
+# send `Authorization: Bearer ` (no value) → LocalProtocolError. With it UNSET,
+# the hub does anonymous downloads, which is what open-weights Qwen3 needs.
+if [ -n "${HF_TOKEN:-}" ]; then
+  export HF_TOKEN
+  echo "Using provided HF token."
+else
+  unset HF_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACE_HUB_TOKEN HF_HUB_TOKEN 2>/dev/null || true
+  echo "No HF token — anonymous downloads (fine for open-weights Qwen3)."
+fi
 
 # --- system deps -------------------------------------------------------------
 say "System packages"
@@ -186,6 +194,19 @@ export USE_4BIT="$USE_4BIT"
 export N_BENCH="$N_BENCH"
 export RESULTS_DIR="$REPO/results"
 export DP_GIT_SHA="$GIT_SHA"
+
+# Cross-run resume: a successful run deletes WORK, so seed any prior results
+# back from FINAL into this fresh checkout. The pipeline then skips finished
+# work (discovery reloads its JSON; H6 resumes by q_id). Set FRESH=1 to ignore
+# prior results (e.g. when you changed MODEL — results are model-specific).
+if [ "${FRESH:-0}" != "1" ] && [ -d "$FINAL" ] && \
+   ls "$FINAL"/h1 "$FINAL"/h6 "$FINAL"/discovery.json >/dev/null 2>&1; then
+  echo "Resuming: seeding prior results from $FINAL into $RESULTS_DIR"
+  mkdir -p "$RESULTS_DIR"
+  for d in discovery.json h1 h2 h3 h4 h5 h6 h7 h8 sycophancy; do
+    [ -e "$FINAL/$d" ] && cp -a "$FINAL/$d" "$RESULTS_DIR/" 2>/dev/null || true
+  done
+fi
 
 # --- run the pipeline --------------------------------------------------------
 say "Running the full pipeline (this is the long part)"

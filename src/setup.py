@@ -236,7 +236,11 @@ def smart_load_model(plan: Optional[Dict[str, Any]] = None) -> Tuple[Any, str]:
         plan = auto_pick()
 
     candidates = [plan["model"]]
-    token = os.environ.get("HF_TOKEN")
+    # An EMPTY HF_TOKEN ("") must be treated as no token — otherwise huggingface
+    # builds an `Authorization: Bearer ` header with no value and the hub raises
+    # `LocalProtocolError: Illegal header value b'Bearer '`. `or None` collapses
+    # "" → None so anonymous (open-weights) downloads work.
+    token = os.environ.get("HF_TOKEN") or None
 
     def _attempt(quantize: Optional[bool] = None, force_single_gpu: bool = False):
         kw = dict(
